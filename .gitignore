@@ -1,0 +1,21 @@
+data/*.duckdb
+data/*.duckdb.wal
+data/landing/
+outputs/
+__pycache__/
+*.egg-info/
+.venv/
+
+# secrets
+.streamlit/secrets.toml
+.env
+
+# raw files not used by the build (the build needs only zepto.zip, swiggy.zip, zomato.zip)
+swiggy_data_coffee.zip
+zomato_data_coffee.zip
+coffee_data_kaggle.zip
+.pytest_cache/
+
+# agent-skill symlinks into the local .venv (created by the streamlit package)
+.agents/
+.claude/

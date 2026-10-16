@@ -1,0 +1,20 @@
+alias,city_name,note
+bengaluru,Bangalore,
+doddaballapura,Bangalore,Swiggy scrape label; listed areas (Hebbal etc.) are Bangalore
+hosur,Bangalore,Swiggy scrape label; listed areas (Sarjapur Road) are Bangalore
+gurugram,Gurgaon,
+noida-1,Noida,
+ncr,Delhi,Zomato label for the whole NCR
+delhi ncr,Delhi,Zomato label for the whole NCR
+new delhi,Delhi,
+bombay,Mumbai,
+calcutta,Kolkata,
+madras,Chennai,
+central-goa,Goa,
+panaji,Goa,
+vizag,Visakhapatnam,
+trivandrum,Thiruvananthapuram,
+mangaluru,Mangalore,
+pondicherry,Puducherry,
+allahabad,Prayagraj,
+mysuru,Mysore,

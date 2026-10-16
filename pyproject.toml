@@ -1,0 +1,20 @@
+[project]
+name = "qcom"
+version = "0.1.0"
+description = "Quick-commerce (Blinkit / Instamart / Zepto) product analytics on DuckDB"
+requires-python = ">=3.10"
+dependencies = ["duckdb>=1.1", "pandas>=2.0", "numpy>=1.24", "pyarrow>=14"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+dashboard = ["streamlit>=1.46", "plotly>=5.20", "anthropic>=1.15"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

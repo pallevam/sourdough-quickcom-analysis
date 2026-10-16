@@ -1,0 +1,74 @@
+city_id,city_name,state,region,tier,metro_cluster,lat,lon
+1,Delhi,Delhi,North,1,Delhi NCR,28.6139,77.2090
+2,Gurgaon,Haryana,North,1,Delhi NCR,28.4595,77.0266
+3,Noida,Uttar Pradesh,North,1,Delhi NCR,28.5355,77.3910
+4,Ghaziabad,Uttar Pradesh,North,1,Delhi NCR,28.6692,77.4538
+5,Faridabad,Haryana,North,1,Delhi NCR,28.4089,77.3178
+6,Mumbai,Maharashtra,West,1,Mumbai MMR,19.0760,72.8777
+7,Thane,Maharashtra,West,1,Mumbai MMR,19.2183,72.9781
+8,Navi Mumbai,Maharashtra,West,1,Mumbai MMR,19.0330,73.0297
+9,Bangalore,Karnataka,South,1,Bangalore,12.9716,77.5946
+10,Hyderabad,Telangana,South,1,Hyderabad,17.3850,78.4867
+11,Chennai,Tamil Nadu,South,1,Chennai,13.0827,80.2707
+12,Kolkata,West Bengal,East,1,Kolkata,22.5726,88.3639
+13,Pune,Maharashtra,West,1,Pune,18.5204,73.8567
+14,Ahmedabad,Gujarat,West,1,Ahmedabad,23.0225,72.5714
+20,Jaipur,Rajasthan,North,2,,26.9124,75.7873
+21,Lucknow,Uttar Pradesh,North,2,,26.8467,80.9462
+22,Kanpur,Uttar Pradesh,North,2,,26.4499,80.3319
+23,Chandigarh,Chandigarh,North,2,Chandigarh Tricity,30.7333,76.7794
+24,Ludhiana,Punjab,North,2,,30.9010,75.8573
+25,Amritsar,Punjab,North,2,,31.6340,74.8723
+26,Dehradun,Uttarakhand,North,2,,30.3165,78.0322
+27,Indore,Madhya Pradesh,Central,2,,22.7196,75.8577
+28,Bhopal,Madhya Pradesh,Central,2,,23.2599,77.4126
+29,Nagpur,Maharashtra,West,2,,21.1458,79.0882
+30,Surat,Gujarat,West,2,,21.1702,72.8311
+31,Vadodara,Gujarat,West,2,,22.3072,73.1812
+32,Kochi,Kerala,South,2,,9.9312,76.2673
+33,Coimbatore,Tamil Nadu,South,2,,11.0168,76.9558
+34,Visakhapatnam,Andhra Pradesh,South,2,,17.6868,83.2185
+35,Bhubaneswar,Odisha,East,2,,20.2961,85.8245
+36,Patna,Bihar,East,2,,25.5941,85.1376
+37,Guwahati,Assam,Northeast,2,,26.1445,91.7362
+38,Goa,Goa,West,2,,15.4909,73.8278
+39,Mysore,Karnataka,South,2,,12.2958,76.6394
+40,Thiruvananthapuram,Kerala,South,2,,8.5241,76.9366
+41,Jalandhar,Punjab,North,2,,,
+42,Rajkot,Gujarat,West,2,,,
+43,Vijayawada,Andhra Pradesh,South,2,,,
+44,Nashik,Maharashtra,West,2,,,
+45,Varanasi,Uttar Pradesh,North,2,,,
+46,Agra,Uttar Pradesh,North,2,,,
+47,Raipur,Chhattisgarh,Central,2,,,
+48,Ranchi,Jharkhand,East,2,,,
+49,Madurai,Tamil Nadu,South,2,,,
+50,Mangalore,Karnataka,South,2,,,
+51,Jodhpur,Rajasthan,North,2,,,
+52,Meerut,Uttar Pradesh,North,2,,,
+53,Prayagraj,Uttar Pradesh,North,2,,,
+54,Gwalior,Madhya Pradesh,Central,2,,,
+55,Jabalpur,Madhya Pradesh,Central,2,,,
+56,Aurangabad,Maharashtra,West,2,,,
+57,Jammu,Jammu and Kashmir,North,2,,,
+58,Puducherry,Puducherry,South,2,,,
+59,Jamshedpur,Jharkhand,East,2,,,
+60,Udaipur,Rajasthan,North,3,,,
+61,Kota,Rajasthan,North,3,,,
+62,Kolhapur,Maharashtra,West,3,,,
+63,Siliguri,West Bengal,East,3,,,
+64,Hubli,Karnataka,South,3,,,
+65,Bareilly,Uttar Pradesh,North,3,,,
+66,Gorakhpur,Uttar Pradesh,North,3,,,
+67,Patiala,Punjab,North,3,,,
+68,Salem,Tamil Nadu,South,3,,,
+69,Trichy,Tamil Nadu,South,3,,,
+70,Vellore,Tamil Nadu,South,3,,,
+71,Thrissur,Kerala,South,3,,,
+72,Guntur,Andhra Pradesh,South,3,,,
+73,Haridwar,Uttarakhand,North,3,,,
+74,Rishikesh,Uttarakhand,North,3,,,
+75,Jhansi,Uttar Pradesh,North,3,,,
+76,Shimla,Himachal Pradesh,North,3,,,
+77,Kanchrapara,West Bengal,East,3,Kolkata,,
+78,Mohali,Punjab,North,2,Chandigarh Tricity,,
