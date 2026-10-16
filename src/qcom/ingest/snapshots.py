@@ -32,7 +32,7 @@ SNAPSHOT_OPTIONAL = ["pincode", "locality", "city", "brand", "brand_type", "plat
                      "rating", "rating_count", "is_sponsored", "url", "is_synthetic"]
 SEARCH_REQUIRED = ["platform", "platform_sku", "scraped_at", "search_term", "rank_position"]
 SEARCH_OPTIONAL = ["pincode", "locality", "city", "is_sponsored", "is_synthetic"]
-FUZZY_THRESHOLD = 0.88
+FUZZY_THRESHOLD = 0.90
 
 
 def read_file(con, path: Path) -> pd.DataFrame:
@@ -78,54 +78,93 @@ def _location_ids(con, df: pd.DataFrame) -> pd.DataFrame:
     return out["location_id"].fillna(0).astype(int).values
 
 
-def _brand_id(con, name: str, brand_type: str | None, synthetic: bool) -> int:
-    key = brand_key(name)
-    con.execute("""
-        INSERT INTO ref.brand (brand_name, brand_key, brand_type, is_synthetic)
-        VALUES (?, ?, coalesce(?, 'unknown'), ?) ON CONFLICT (brand_key) DO NOTHING
-    """, [name, key, brand_type, synthetic])
-    return con.execute("SELECT brand_id FROM ref.brand WHERE brand_key = ?", [key]).fetchone()[0]
+def _text(v) -> str | None:
+    """pandas gives NaN (a float) for missing strings; treat it as None."""
+    return v.strip() or None if isinstance(v, str) else None
 
 
-def _match_or_create_product(con, platform_id: int, row) -> tuple[int, str, float]:
-    brand = row.brand or "Unknown"
-    grams, pieces = parse_pack_size(row.pack_size) if row.pack_size else parse_pack_size(row.product_name)
-    key = product_key(brand, row.product_name, grams)
+def _next_ids(con, seq: str, n: int) -> list[int]:
+    return [r[0] for r in con.execute(f"SELECT nextval('{seq}') FROM range(?)", [n]).fetchall()] if n else []
 
-    hit = con.execute("SELECT product_id FROM core.product WHERE product_key = ?", [key]).fetchone()
-    if hit:
-        return hit[0], "exact_key", 1.0
 
-    # Fuzzy: same brand + same pack size, closest token string. Only across platforms:
-    # two SKUs on one platform are different products by definition, and character
-    # similarity can't tell variants apart ('5 Blue Pens' vs '5 Black Pens' = 0.91).
-    bkey, tokens = brand_key(brand), " ".join(name_tokens(row.product_name, brand))
-    gkey = "" if grams is None else str(int(round(grams)))
-    cands = con.execute("""
-        SELECT product_id, split_part(product_key, '|', 2) FROM core.product p
-        WHERE split_part(product_key, '|', 1) = ? AND split_part(product_key, '|', 3) = ?
-          AND NOT EXISTS (SELECT 1 FROM core.listing l
-                          WHERE l.product_id = p.product_id AND l.platform_id = ?)
-    """, [bkey, gkey, platform_id]).fetchall()
-    best = max(((pid, similarity(tokens, t)) for pid, t in cands), key=lambda x: x[1], default=None)
-    if best and best[1] >= FUZZY_THRESHOLD:
-        return best[0], "fuzzy", best[1]
+class _Matcher:
+    """Resolves new listings to products in memory, then writes brands/products in bulk.
 
-    category_id = classify(row.product_name)
-    if category_id is None and row.platform_category:
-        r = con.execute("""SELECT category_id FROM ref.platform_category_map
-                           WHERE platform_id = ? AND platform_category = lower(?)""",
-                        [platform_id, row.platform_category]).fetchone()
-        category_id = r[0] if r else None
-    sourdough = is_sourdough(row.product_name)
-    attrs = bread_attributes(row.product_name) if sourdough or (category_id or 0) // 100 == 1 else {}
-    pid = con.execute("""
-        INSERT INTO core.product (product_key, canonical_name, brand_id, category_id,
-                                  pack_grams, pack_units, is_sourdough, attributes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING product_id
-    """, [key, row.product_name, _brand_id(con, brand, row.brand_type, bool(row.is_synthetic)),
-          category_id or 999, grams, pieces, sourdough, json.dumps(attrs)]).fetchone()[0]
-    return pid, "new", 0.0
+    Matching rules: only when the pack size is known; exact product_key first; else fuzzy on
+    (brand, pack size) but only to a product with no listing on the same platform (two SKUs on one platform are different
+    products, and character similarity can't tell variants apart: '5 Blue Pens' vs
+    '5 Black Pens' = 0.91); else a new product.
+    """
+
+    def __init__(self, con):
+        self.con = con
+        self.by_key = dict(con.execute("SELECT product_key, product_id FROM core.product").fetchall())
+        self.brands = dict(con.execute("SELECT brand_key, brand_id FROM ref.brand").fetchall())
+        self.catmap = {(pf, cat): cid for pf, cat, cid in con.execute(
+            "SELECT platform_id, platform_category, category_id FROM ref.platform_category_map").fetchall()}
+        self.platforms: dict[int, set] = {}
+        for pid, pf in con.execute("SELECT product_id, platform_id FROM core.listing").fetchall():
+            self.platforms.setdefault(pid, set()).add(pf)
+        self.cands: dict[tuple, list] = {}
+        for key, pid in self.by_key.items():
+            b, toks, g = key.split("|")[:3]
+            self.cands.setdefault((b, g), []).append((pid, toks))
+        self.new_brands, self.new_products = [], []
+
+    def _brand_id(self, name: str, brand_type, synthetic: bool) -> int:
+        key = brand_key(name)
+        if key not in self.brands:
+            self.brands[key] = _next_ids(self.con, "ref.seq_brand", 1)[0]
+            self.new_brands.append((self.brands[key], name, key, brand_type or "unknown", synthetic))
+        return self.brands[key]
+
+    def match(self, platform_id: int, row) -> tuple[int, str, float]:
+        name, brand = row.product_name, _text(row.brand) or "Unknown"
+        pack = _text(row.pack_size)
+        grams, pieces = parse_pack_size(pack) if pack else parse_pack_size(name)
+        key = product_key(brand, name, grams)
+        bkey, tokens, gkey = key.split("|", 2)
+        if grams is None or (key in self.by_key and platform_id in self.platforms.get(self.by_key[key], ())):
+            # Unknown pack size, or the same key twice on one platform: the name alone can't tell
+            # variants apart ('Tata Tea Gold' 250 g vs 1 kg), so never merge. Platform-scoped key.
+            key = f"{key}|{platform_id}:{row.platform_sku}"
+        if key in self.by_key:
+            pid, method, score = self.by_key[key], "exact_key", 1.0
+        else:
+            best = max(((pid, similarity(tokens, t)) for pid, t in self.cands.get((bkey, gkey), [])
+                        if gkey and platform_id not in self.platforms.get(pid, ())),
+                       key=lambda x: x[1], default=None)
+            if best and best[1] >= FUZZY_THRESHOLD:
+                pid, method, score = best[0], "fuzzy", best[1]
+            else:
+                category_id = classify(name)
+                cat = _text(row.platform_category)
+                if category_id is None and cat:
+                    category_id = self.catmap.get((platform_id, cat.lower()))
+                sourdough = is_sourdough(name)
+                attrs = bread_attributes(name) if sourdough or (category_id or 0) // 100 == 1 else {}
+                pid = _next_ids(self.con, "core.seq_product", 1)[0]
+                self.new_products.append((pid, key, name, self._brand_id(brand, _text(row.brand_type),
+                                          bool(row.is_synthetic)), category_id or 999, grams, pieces,
+                                          sourdough, json.dumps(attrs)))
+                self.by_key[key] = pid
+                self.cands.setdefault((bkey, gkey), []).append((pid, tokens))
+                method, score = "new", 0.0
+        self.platforms.setdefault(pid, set()).add(platform_id)
+        return pid, method, score
+
+    def flush(self) -> None:
+        if self.new_brands:
+            self.con.executemany("INSERT INTO ref.brand (brand_id, brand_name, brand_key, brand_type, is_synthetic) "
+                                 "VALUES (?, ?, ?, ?, ?)", self.new_brands)
+        if self.new_products:
+            prod = pd.DataFrame(self.new_products, columns=["product_id", "product_key", "canonical_name",
+                                "brand_id", "category_id", "pack_grams", "pack_units", "is_sourdough", "attributes"])
+            self.con.register("_prod", prod)
+            self.con.execute("INSERT INTO core.product SELECT product_id, product_key, canonical_name, brand_id, "
+                             "category_id, pack_grams, pack_units, is_sourdough, attributes::JSON FROM _prod")
+            self.con.unregister("_prod")
+        self.new_brands, self.new_products = [], []
 
 
 def _listing_ids(con, df: pd.DataFrame) -> pd.Series:
@@ -135,26 +174,39 @@ def _listing_ids(con, df: pd.DataFrame) -> pd.Series:
                 .agg(first_seen=("scraped_at", "min"), last_seen=("scraped_at", "max"),
                      **{c: (c, "last") for c in ["product_name", "brand", "brand_type",
                         "platform_category", "pack_size", "url", "is_synthetic"]}))
-    ids = {}
-    for row in latest.itertuples(index=False):
-        pfid = db.platform_id(con, row.platform)
-        existing = con.execute("SELECT listing_id FROM core.listing WHERE platform_id = ? AND platform_sku = ?",
-                               [pfid, str(row.platform_sku)]).fetchone()
-        if existing:
-            con.execute("""UPDATE core.listing
-                           SET first_seen_at = least(first_seen_at, ?), last_seen_at = greatest(last_seen_at, ?)
-                           WHERE listing_id = ?""", [row.first_seen, row.last_seen, existing[0]])
-            ids[(row.platform, row.platform_sku)] = existing[0]
-            continue
-        product_id, method, score = _match_or_create_product(con, pfid, row)
-        ids[(row.platform, row.platform_sku)] = con.execute("""
-            INSERT INTO core.listing (platform_id, platform_sku, product_id, raw_name, raw_brand,
-                raw_category, pack_size_raw, url, match_method, match_score, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING listing_id
-        """, [pfid, str(row.platform_sku), product_id, row.product_name, row.brand,
-              row.platform_category, row.pack_size, row.url, method, score,
-              row.first_seen, row.last_seen]).fetchone()[0]
-    return pd.Series([ids[k] for k in zip(df["platform"], df["platform_sku"])], index=df.index)
+    latest["platform_id"] = latest["platform"].map({p: db.platform_id(con, p) for p in latest["platform"].unique()})
+    con.register("_latest", latest)
+    existing = con.execute("""
+        SELECT l.platform_id, l.platform_sku, l.listing_id FROM core.listing l
+        JOIN _latest x ON x.platform_id = l.platform_id AND x.platform_sku = l.platform_sku
+    """).fetchall()
+    con.execute("""
+        UPDATE core.listing l SET first_seen_at = least(l.first_seen_at, x.first_seen),
+                                  last_seen_at = greatest(l.last_seen_at, x.last_seen)
+        FROM _latest x WHERE x.platform_id = l.platform_id AND x.platform_sku = l.platform_sku
+    """)
+    con.unregister("_latest")
+    ids = {(pf, sku): lid for pf, sku, lid in existing}
+
+    new = latest[[(pf, sku) not in ids for pf, sku in zip(latest.platform_id, latest.platform_sku)]]
+    if len(new):
+        matcher = _Matcher(con)
+        listing_ids = _next_ids(con, "core.seq_listing", len(new))
+        rows = []
+        for lid, row in zip(listing_ids, new.itertuples(index=False)):
+            pid, method, score = matcher.match(row.platform_id, row)
+            ids[(row.platform_id, row.platform_sku)] = lid
+            rows.append((lid, row.platform_id, row.platform_sku, pid, row.product_name, _text(row.brand),
+                         _text(row.platform_category), _text(row.pack_size), _text(row.url), method, score,
+                         row.first_seen, row.last_seen))
+        matcher.flush()
+        con.register("_lst", pd.DataFrame(rows, columns=[
+            "listing_id", "platform_id", "platform_sku", "product_id", "raw_name", "raw_brand", "raw_category",
+            "pack_size_raw", "url", "match_method", "match_score", "first_seen_at", "last_seen_at"]))
+        con.execute("INSERT INTO core.listing SELECT * FROM _lst")
+        con.unregister("_lst")
+    pf_of = {p: db.platform_id(con, p) for p in df["platform"].unique()}
+    return pd.Series([ids[(pf_of[p], sku)] for p, sku in zip(df["platform"], df["platform_sku"])], index=df.index)
 
 
 def load_snapshots(con, path: Path, source_type: str = "own_scrape") -> int:

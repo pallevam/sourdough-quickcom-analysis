@@ -5,6 +5,9 @@ zepto.zip   Zepto_data.csv: one national catalogue snapshot (no pincode, no time
 swiggy.zip  swiggy_file.csv  } Food-delivery *restaurant* listings, not Instamart.
 zomato.zip  zomato_dataset.csv } Loaded into core.restaurant_listing as a city-level
                                  bakery / cafe / sourdough affinity signal.
+blinkit.zip    blinkit_retail.csv: Blinkit home-page prices, 5 cities x 11 days (Jan 2024), CC0.
+               No pincode, stock count or ratings: one city-wide location per city, no sales estimate.
+bigbasket.zip  BigBasket Products.csv: ~27.5k-product catalogue (2022), CC BY-NC-SA 4.0. National, one date.
 """
 
 from __future__ import annotations
@@ -51,6 +54,70 @@ def load_zepto(con, zip_path: Path) -> int:
     }).drop_duplicates(["platform_sku"])
     n = load_snapshot_frame(con, df, run_id)
     print(f"loaded {n:,} Zepto catalogue rows")
+    return n
+
+
+def _rupees(s) -> float | None:
+    """'₹ 1,299' -> 1299.0"""
+    if not isinstance(s, str):
+        return None
+    m = re.search(r"[\d,]+(?:\.\d+)?", s)
+    return float(m.group(0).replace(",", "")) if m else None
+
+
+def _sku(*parts) -> str:
+    return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:12]
+
+
+def load_bigbasket(con, zip_path: Path) -> int:
+    """Load first: its brand column seeds the brand list used to guess Blinkit brands."""
+    run_id = db.start_run(con, "kaggle", zip_path, "BigBasket catalogue (Kaggle, CC BY-NC-SA 4.0); national, one date")
+    if run_id is None:
+        print(f"skip {zip_path.name}: already loaded")
+        return 0
+    raw, file_date = _read_member(zip_path, "BigBasket Products.csv")
+    raw = raw.dropna(subset=["product"])
+    df = pd.DataFrame({
+        "platform": "bigbasket",
+        "platform_sku": raw["index"].astype(str),
+        "scraped_at": file_date,
+        "product_name": raw["product"].str.strip(),
+        "brand": raw["brand"].fillna("Unknown").str.strip(),
+        "platform_category": raw["category"].str.lower(),
+        "selling_price": raw["sale_price"],
+        "mrp": raw["market_price"],
+        "rating": raw["rating"],
+    })
+    n = load_snapshot_frame(con, df, run_id)
+    print(f"loaded {n:,} BigBasket catalogue rows")
+    return n
+
+
+def load_blinkit(con, zip_path: Path) -> int:
+    run_id = db.start_run(con, "kaggle", zip_path, "Blinkit home-page prices (Kaggle, CC0); 5 cities, city-level")
+    if run_id is None:
+        print(f"skip {zip_path.name}: already loaded")
+        return 0
+    raw, _ = _read_member(zip_path, "blinkit_retail.csv")
+    raw = raw.dropna(subset=["Title"]).drop_duplicates(["Title", "Details", "Place", "Date"])
+    known = set(con.execute("SELECT brand_key FROM ref.brand").df()["brand_key"])
+    sp = raw["Price_discount"].map(_rupees)
+    df = pd.DataFrame({
+        "platform": "blinkit",
+        "platform_sku": [_sku(t, d) for t, d in zip(raw["Title"], raw["Details"].fillna(""))],
+        "scraped_at": pd.to_datetime(raw["Date"].astype(str), format="%Y%m%d"),
+        "pincode": "",
+        "locality": raw["Place"] + " (city-wide)",   # no pincode in the source: one location per city
+        "city": raw["Place"],
+        "product_name": raw["Title"].str.strip(),
+        "brand": [guess_brand(t, known) for t in raw["Title"]],
+        "pack_size": raw["Details"],
+        "selling_price": sp,
+        "mrp": raw["Price_original"].map(_rupees).fillna(sp),    # no strike-through price = no discount
+        "in_stock": raw["Tag"].fillna("") != "Out of Stock",
+    })
+    n = load_snapshot_frame(con, df, run_id)
+    print(f"loaded {n:,} Blinkit price rows")
     return n
 
 

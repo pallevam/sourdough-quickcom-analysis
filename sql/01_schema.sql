@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS ref.platform (
     platform_id     SMALLINT PRIMARY KEY,
     platform_code   VARCHAR NOT NULL UNIQUE,     -- 'blinkit', 'instamart', 'zepto', ...
     platform_name   VARCHAR NOT NULL,
-    channel         VARCHAR NOT NULL CHECK (channel IN ('quick_commerce', 'food_delivery')),
+    channel         VARCHAR NOT NULL CHECK (channel IN ('quick_commerce', 'e_grocery', 'food_delivery')),
     parent_company  VARCHAR
 );
 

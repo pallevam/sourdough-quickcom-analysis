@@ -1,5 +1,6 @@
 """Chat assistant: SQL sandbox and the tool loop, driven by a scripted fake client (no API calls)."""
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 import assistant as ai  # noqa: E402
 
-DB = ROOT / "data" / "qcom.duckdb"
+DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))  # override to test another build
 pytestmark = pytest.mark.skipif(not DB.exists(), reason="run `python -m qcom build` first")
 
 
@@ -52,7 +53,8 @@ def test_writes_files_and_config_blocked(con, sql):
 def test_system_prompt_lists_panel_values_only(con):
     p = ai.build_system_prompt(con)
     assert "mart.sales_daily" in p and "Levain & Loaf" in p
-    assert "Cadbury" not in p  # real Zepto catalogue brands stay out of the value lists
+    assert "Cadbury" not in p  # real catalogue brands stay out of the value lists
+    assert "The Baker's Dozen" in p and "2024-01-17" in p  # real sourdough + real Blinkit dates are described
 
 
 def _resp(content, stop):

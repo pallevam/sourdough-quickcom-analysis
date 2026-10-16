@@ -38,22 +38,28 @@ SCHEMA_OBJECTS = [
     ("ref", "model_param", "Assumptions behind the sales estimates."),
 ]
 
-PANEL = "FROM mart.sales_daily WHERE region <> 'Unknown'"   # the quick-commerce panel, not the Zepto catalogue
+PANEL = "FROM mart.sales_daily WHERE is_synthetic"                    # synthetic sourdough panel
+REAL_BLINKIT = "FROM mart.sales_daily WHERE NOT is_synthetic AND region <> 'Unknown'"  # real Blinkit 2024
 ENUMS = [  # (label, sql) - small value lists that help the model write correct filters
-    ("platform_code", f"SELECT DISTINCT platform_code {PANEL} ORDER BY 1"),
-    ("region", f"SELECT DISTINCT region {PANEL} ORDER BY 1"),
-    ("market", f"SELECT DISTINCT market {PANEL} ORDER BY 1"),
-    ("tier", f"SELECT DISTINCT tier {PANEL} ORDER BY 1"),
-    ("brand_name", f"SELECT DISTINCT brand_name {PANEL} ORDER BY 1"),
-    ("l2 > l3 (bakery categories)", f"SELECT DISTINCT l2 || ' > ' || l3 {PANEL} ORDER BY 1"),
-    ("flour (sourdough only)", f"SELECT DISTINCT coalesce(flour, 'NULL') {PANEL} AND is_sourdough ORDER BY 1"),
-    ("sales_date range", f"SELECT min(sales_date) || ' to ' || max(sales_date) {PANEL}"),
+    ("SYNTHETIC panel platform_code", f"SELECT DISTINCT platform_code {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel region", f"SELECT DISTINCT region {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel market", f"SELECT DISTINCT market {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel tier", f"SELECT DISTINCT tier {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel brand_name", f"SELECT DISTINCT brand_name {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel l2 > l3", f"SELECT DISTINCT l2 || ' > ' || l3 {PANEL} ORDER BY 1"),
+    ("SYNTHETIC panel flour (sourdough)", f"SELECT DISTINCT coalesce(flour, 'NULL') {PANEL} AND is_sourdough ORDER BY 1"),
+    ("SYNTHETIC panel sales_date range", f"SELECT min(sales_date) || ' to ' || max(sales_date) {PANEL}"),
+    ("REAL Blinkit market", f"SELECT DISTINCT market {REAL_BLINKIT} ORDER BY 1"),
+    ("REAL Blinkit dates", f"SELECT count(DISTINCT sales_date) || ' dates, ' || min(sales_date) || ' to ' || max(sales_date) {REAL_BLINKIT}"),
+    ("REAL Blinkit l1 categories", f"SELECT DISTINCT l1 {REAL_BLINKIT} ORDER BY 1"),
+    ("REAL catalogues in mart.v_listing (platform_code: products)", "SELECT string_agg(platform_code || ': ' || n, ', ') FROM (SELECT l.platform_code, count(*) AS n FROM mart.v_listing l WHERE NOT l.brand_is_synthetic GROUP BY 1 ORDER BY 1)"),
+    ("REAL sourdough products (all sources)", "SELECT string_agg(platform_code || ' / ' || brand_name || ' / ' || canonical_name, '; ') FROM mart.v_listing WHERE is_sourdough AND NOT brand_is_synthetic"),
     ("mart.market_affinity markets (real)", "SELECT count(*) || ' markets, e.g. ' || string_agg(market, ', ' ORDER BY affinity_index DESC) FILTER (WHERE rn <= 8) FROM (SELECT *, row_number() OVER (ORDER BY affinity_index DESC) rn FROM mart.market_affinity)"),
 ]
 
 GUIDANCE = """\
-You answer questions about a quick-commerce analytics warehouse (Blinkit, Swiggy Instamart, Zepto in India),
-focused on sourdough bread. The people asking are friends and family of the analyst: answer in plain English,
+You answer questions about a quick-commerce analytics warehouse (Blinkit, Swiggy Instamart, Zepto and BigBasket
+in India), focused on sourdough bread. The people asking are friends and family of the analyst: answer in plain English,
 lead with the answer, keep it short, and use Indian number formats (lakh = 1e5, crore = 1e7; Rs for rupees).
 
 How to work:
@@ -66,12 +72,25 @@ How to work:
 Facts you must respect:
 - Platforms do not publish sales. est_units / est_gmv are ESTIMATES (inventory depletion or rating velocity,
   see est_method); est_units_demand adds sales lost to stock-outs. Say "estimated" when quoting them.
-- The quick-commerce panel (sales, prices, stock, search) is SYNTHETIC: fictional brands, made-up numbers,
-  is_synthetic = TRUE. Whenever your answer uses it, add a one-line note that the numbers are illustrative
-  demo data, not real market figures. Only mart.market_affinity and core.restaurant_listing are real data.
-- mart.sales_daily also holds a REAL single-day Zepto catalogue snapshot (765 grocery SKUs, region = 'Unknown',
-  no sales estimates). Exclude region = 'Unknown' for anything about sales, trends or geography; the values
-  listed below describe the panel only.
+- The warehouse mixes SYNTHETIC and REAL data. ALWAYS filter on is_synthetic, because platform_code
+  'blinkit' exists in both. The data sources:
+  1. SYNTHETIC sourdough panel (is_synthetic = TRUE): fictional brands and made-up numbers for Blinkit,
+     Instamart and Zepto, Apr-Sep 2026, 13 markets, with sales estimates, stock and search. It is the only
+     source with sourdough sales or trends. Whenever an answer uses it, add a one-line note that these are
+     illustrative demo numbers, not real market figures.
+  2. REAL Blinkit prices (NOT is_synthetic AND region <> 'Unknown'): Kaggle, CC0. Blinkit home-page
+     products in 5 cities, one reading per city per day, 17 Jan - 1 Feb 2024. Real prices, MRP, discounts
+     and in-stock flags. NO sales (est_units / est_gmv are NULL), NO sourdough, pincode unknown (city-wide
+     locations), no Blinkit categories (many products are 'Uncategorised'). Kolkata shows no stock-outs at
+     all, which looks like a gap in the source data: say so if it matters.
+  3. REAL catalogues, single date, no location (region = 'Unknown' in mart.sales_daily; use mart.v_listing
+     joined to core.listing_snapshot for prices): BigBasket (Jun 2022, 27.5k products, CC BY-NC-SA 4.0,
+     real brands, pack sizes mostly missing; includes 3 real sourdough products from The Baker's Dozen)
+     and Zepto (765 products, no bread).
+  4. REAL restaurant data: mart.market_affinity and core.restaurant_listing (Swiggy/Zomato food delivery).
+- For a question about "real" sourdough, the only real sourdough rows are the 3 BigBasket products.
+- Average prices across many products move with the product mix: compare like-for-like products when
+  the question is about price changes.
 - Weeks/months at the edges of the date range are partial: use full periods for growth comparisons.
 - est_gmv is in rupees. price_per_100g is Rs per 100 g. Shares: compute them, don't sum percentages.
 """

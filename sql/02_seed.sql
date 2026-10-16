@@ -6,6 +6,7 @@ INSERT OR IGNORE INTO ref.platform VALUES
     (3, 'zepto',            'Zepto',              'quick_commerce', 'Kiranakart Technologies'),
     (4, 'bbnow',            'BigBasket BB Now',   'quick_commerce', 'Tata Digital'),
     (5, 'flipkart_minutes', 'Flipkart Minutes',   'quick_commerce', 'Flipkart'),
+    (6, 'bigbasket',        'BigBasket',          'e_grocery',      'Tata Digital'),
     (11, 'swiggy_food',     'Swiggy Food',        'food_delivery',  'Swiggy Ltd'),
     (12, 'zomato_food',     'Zomato',             'food_delivery',  'Eternal Ltd');
 
@@ -65,6 +66,21 @@ INSERT OR IGNORE INTO ref.platform_category_map VALUES
     (3, 'skincare',                   901),
     (3, 'stationery books',           951),
     (3, 'paan corners',               952);
+
+-- BigBasket's top-level categories (Kaggle export). Breads, sourdough etc. are caught by the
+-- name classifier first; this only places everything else.
+INSERT OR IGNORE INTO ref.platform_category_map VALUES
+    (6, 'beauty & hygiene',         901),
+    (6, 'baby care',                901),
+    (6, 'gourmet & world food',     601),
+    (6, 'snacks & branded foods',   601),
+    (6, 'foodgrains, oil & masala', 401),
+    (6, 'beverages',                502),
+    (6, 'bakery, cakes & dairy',    205),
+    (6, 'fruits & vegetables',      301),
+    (6, 'eggs, meat & fish',        801),
+    (6, 'kitchen, garden & pets',   951),
+    (6, 'cleaning & household',     951);
 
 INSERT OR IGNORE INTO ref.model_param VALUES
     ('orders_per_rating', 30,

@@ -22,7 +22,7 @@ import assistant as ai
 import queries as q
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = ROOT / "data" / "qcom.duckdb"
+DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))
 
 # Reference palette (dataviz skill): categorical slots in fixed order, light + dark steps.
 CAT_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -65,7 +65,7 @@ password_gate()
 def ensure_db() -> None:
     """A fresh server has only the repo: build data/qcom.duckdb from the Kaggle zips + synthetic panel."""
     if not DB.exists():
-        subprocess.run([sys.executable, "-m", "qcom", "build"], cwd=ROOT, check=True,
+        subprocess.run([sys.executable, "-m", "qcom", "--db", str(DB), "build"], cwd=ROOT, check=True,
                        env={**os.environ, "PYTHONPATH": str(ROOT / "src")})
 
 
@@ -155,62 +155,93 @@ def options(sql: str) -> list:
     return [v for v in run(sql).iloc[:, 0].tolist() if v is not None]
 
 
-bounds = run("SELECT min(sales_date) AS lo, max(sales_date) AS hi FROM mart.sales_daily WHERE region <> 'Unknown'").iloc[0]
+with st.sidebar:
+    dataset = st.radio("Dataset", list(q.DATASETS), format_func=q.DATASETS.get,
+                       help="The sourdough trends need sales estimates, which only the synthetic panel has. "
+                            "The real Blinkit file has prices and stock-outs for 5 cities, but no sourdough.")
+DS = q.dataset_sql(dataset)
+SALES = q.has_sales(dataset)
+
+bounds = run(f"SELECT min(sales_date) AS lo, max(sales_date) AS hi FROM mart.sales_daily "
+             f"WHERE region <> 'Unknown' AND {DS}").iloc[0]
 lo, hi = bounds.lo.date(), bounds.hi.date()
 
 with st.sidebar:
     st.header("Filters")
-    picked = st.date_input("Date range", (lo, hi), min_value=lo, max_value=hi)
+    k = f"_{dataset}"  # per-dataset widget state: options and date bounds differ between datasets
+    picked = st.date_input("Date range", (lo, hi), min_value=lo, max_value=hi, key="dates" + k)
     d_from, d_to = (picked if isinstance(picked, (tuple, list)) and len(picked) == 2 else (lo, hi))
-    scope = st.radio("Category scope", list(q.SCOPES), format_func=q.SCOPES.get)
-    metric = st.selectbox("Metric", list(q.METRICS), format_func=q.METRICS.get)
-    grain = st.segmented_control("Time grain", q.GRAINS, default="week") or "week"
+    scope = st.radio("Category scope", list(q.SCOPES), format_func=q.SCOPES.get, index=0 if SALES else 2,
+                     key="scope" + k, help=None if SALES else "This Blinkit file has no sourdough products.")
+    metrics = q.metrics_for(dataset)
+    metric = st.selectbox("Metric", list(metrics), format_func=metrics.get, key="metric" + k)
+    grain = st.segmented_control("Time grain", q.GRAINS, default="week" if SALES else "day", key="grain" + k) \
+        or ("week" if SALES else "day")
     st.divider()
-    platforms = st.multiselect("Platform", options("SELECT DISTINCT platform_code FROM mart.v_listing ORDER BY 1"))
+    platforms = st.multiselect("Platform", options(
+        f"SELECT DISTINCT platform_code FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} ORDER BY 1"),
+        key="platforms" + k)
     regions = st.multiselect("Region", options(
-        "SELECT DISTINCT region FROM mart.v_location WHERE region <> 'Unknown' ORDER BY 1"))
-    tiers = st.multiselect("City tier", options("SELECT DISTINCT tier FROM mart.v_location WHERE tier IS NOT NULL ORDER BY 1"))
+        f"SELECT DISTINCT region FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} ORDER BY 1"), key="regions" + k)
+    tiers = st.multiselect("City tier", options(
+        f"SELECT DISTINCT tier FROM mart.sales_daily WHERE tier IS NOT NULL AND {DS} ORDER BY 1"), key="tiers" + k)
     region_sql = f" AND {q._in('region', regions)}" if regions else ""
     tier_sql = f" AND {q._in('tier', tiers)}" if tiers else ""
     markets = st.multiselect("Market / city", options(
-        f"SELECT DISTINCT market FROM mart.sales_daily WHERE region <> 'Unknown'{region_sql}{tier_sql} ORDER BY 1"))
+        f"SELECT DISTINCT market FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS}{region_sql}{tier_sql} "
+        f"ORDER BY 1"), key="markets" + k)
     scope_sql = {"sourdough": "is_sourdough", "bakery": "l1 = 'Bakery'", "all": "TRUE"}[scope]
     l3s = st.multiselect("Sub-category", options(
-        f"SELECT DISTINCT l3 FROM mart.sales_daily WHERE region <> 'Unknown' AND {scope_sql} ORDER BY 1"))
+        f"SELECT DISTINCT l3 FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} AND {scope_sql} ORDER BY 1"),
+        key="l3s" + k)
     brands = st.multiselect("Brand", options(
-        f"SELECT DISTINCT brand_name FROM mart.sales_daily WHERE region <> 'Unknown' AND {scope_sql} ORDER BY 1"))
+        f"SELECT DISTINCT brand_name FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} AND {scope_sql} "
+        f"ORDER BY 1"), key="brands" + k)
     flours = st.multiselect("Flour (sourdough)", options(
-        "SELECT DISTINCT coalesce(flour, '(unspecified)') FROM mart.v_listing WHERE is_sourdough ORDER BY 1"))
-    include_synth = st.toggle("Include synthetic panel", value=True,
-                              help="The only multi-day, multi-city quick-commerce data so far is synthetic.")
+        f"SELECT DISTINCT coalesce(flour, '(unspecified)') FROM mart.sales_daily WHERE is_sourdough AND {DS} "
+        f"ORDER BY 1"), key="flours" + k)
 
 f = q.Filters(date_from=d_from, date_to=d_to, platforms=platforms, regions=regions, tiers=tiers,
               markets=markets, scope=scope, l3s=l3s, brands=brands, flours=flours, metric=metric,
-              grain=grain, include_synthetic=include_synth)
+              grain=grain, dataset=dataset)
 metric_label = q.METRICS[metric]
 
 # ------------------------------------------------------------------- header --
 
 st.title("Sourdough on quick commerce")
 check = run(q.synthetic_check(f)).iloc[0]
-if check.has_synthetic:
+if SALES:
     st.warning("**Synthetic data in view.** Brands, volumes and trends come from the simulated panel "
                "(`python -m qcom synth`): use them to explore the method, not as market facts.", icon="⚠️")
+else:
+    st.info("**Real data: Blinkit home-page prices** for 5 cities, 17 Jan – 1 Feb 2024 (Kaggle, CC0). "
+            "Prices, discounts and stock-outs are real; there are **no sales figures and no sourdough** in "
+            "this file. See the Real catalogues tab for real sourdough listings.", icon="ℹ️")
 
 # ----------------------------------------------------------------- overview --
 def overview():
     k = run(q.kpis(f)).iloc[0]
-    share = run(q.sourdough_share(f)).iloc[0, 0]
     cols = st.columns(5)
-    cols[0].metric("Est. units", f"{k.units:,.0f}" if pd.notna(k.units) else "–")
-    cols[1].metric("Est. GMV", inr(k.gmv))
-    cols[2].metric("Sourdough share of bakery GMV", f"{share:.1f}%" if pd.notna(share) else "–")
-    cols[3].metric("Avg Rs / 100 g", f"{k.rs_per_100g:,.1f}" if pd.notna(k.rs_per_100g) else "–")
-    cols[4].metric("Availability", f"{k.availability_pct:.1f}%" if pd.notna(k.availability_pct) else "–")
-    sql_box(q.kpis(f) + ";\n\n" + q.sourdough_share(f), "kpis")
+    fmt = lambda v, f_: f_.format(v) if pd.notna(v) else "–"
+    if SALES:
+        share = run(q.sourdough_share(f)).iloc[0, 0]
+        cols[0].metric("Est. units", fmt(k.units, "{:,.0f}"))
+        cols[1].metric("Est. GMV", inr(k.gmv))
+        cols[2].metric("Sourdough share of bakery GMV", fmt(share, "{:.1f}%"))
+        cols[3].metric("Avg Rs / 100 g", fmt(k.rs_per_100g, "{:,.1f}"))
+        cols[4].metric("Availability", fmt(k.availability_pct, "{:.1f}%"))
+        sql_box(q.kpis(f) + ";\n\n" + q.sourdough_share(f), "kpis")
+    else:
+        cols[0].metric("Products listed", fmt(k.skus, "{:,.0f}"))
+        cols[1].metric("Avg selling price", fmt(k.avg_price, "Rs {:,.0f}"))
+        cols[2].metric("Avg discount", fmt(k.avg_discount_pct, "{:.1f}%"))
+        cols[3].metric("Avg Rs / 100 g", fmt(k.avg_rs_per_100g, "{:,.1f}"))
+        cols[4].metric("In stock", fmt(k.availability_pct, "{:.1f}%"))
+        sql_box(q.kpis(f), "kpis")
 
     color = st.segmented_control("Colour by", list(q.COLOR_BY), format_func=q.COLOR_BY.get,
-                                 default="segment" if scope == "bakery" else "platform_code") or "platform_code"
+                                 default="segment" if scope == "bakery" else ("platform_code" if SALES else "market"),
+                                 key="color_" + dataset) or "platform_code"
     sql = q.trend(f, color)
     df = run(sql)
     fig = px.line(df, x="period", y="value", color="series", title=f"{metric_label} by {q.COLOR_BY[color].lower()}",
@@ -240,6 +271,8 @@ def geography():
                         projection_type="mercator")
         chart(fig, 520)
         sql_box(sql, "city_map")
+    if not SALES:
+        return
     sql = q.tier_share(f)
     df = run(sql)
     fig = px.line(df, x="month", y="sd_share_of_bakery_gmv_pct", color="tier", markers=True,
@@ -253,9 +286,10 @@ def geography():
 
 # ------------------------------------------------------------ brands & price --
 def brands_price():
-    sql = q.brand_share(f)
-    heatmap(run(sql), "brand_name", "market", "gmv_share_pct", "Brand share of GMV within each market (%)", ".1f")
-    sql_box(sql, "brand_share")
+    if SALES:
+        sql = q.brand_share(f)
+        heatmap(run(sql), "brand_name", "market", "gmv_share_pct", "Brand share of GMV within each market (%)", ".1f")
+        sql_box(sql, "brand_share")
 
     sql = q.price_ladder(f)
     df = run(sql)
@@ -269,6 +303,8 @@ def brands_price():
     chart(fig, max(380, 26 * df.canonical_name.nunique() + 120))
     sql_box(sql, "price_ladder")
 
+    if not SALES:
+        return
     sql = q.discount_response(f)
     df = run(sql)
     fig = px.bar(df, x="discount_band", y="avg_units_per_sku_day", color="segment", barmode="group",
@@ -283,6 +319,13 @@ def brands_price():
 
 # ------------------------------------------------------------- availability --
 def availability():
+    sql = q.oos_by_category(f)
+    heatmap(run(sql), "category", "market", "oos_pct", "Out-of-stock rate (%) by market and category", ".1f")
+    sql_box(sql, "oos_by_category")
+    if not SALES:
+        st.caption("The Blinkit file has one reading per city per day, so there's no time-of-day view.")
+        return
+
     sql = q.oos_heatmap(f)
     df = run(sql)
     df["weekday"] = pd.Categorical(df.weekday, ["Monday", "Tuesday", "Wednesday", "Thursday",
@@ -315,10 +358,26 @@ def search_tab():
     st.dataframe(df.round(1), width="stretch", hide_index=True)
     sql_box(sql, "search")
 
+# ------------------------------------------------------------ catalogues --
+def catalogues():
+    st.markdown("**Real product listings** from BigBasket (catalogue, Jun 2022, CC BY-NC-SA 4.0), "
+                "Blinkit (5 cities, Jan 2024, CC0) and Zepto (catalogue). Not affected by the sidebar filters.")
+    sql = q.catalogue_summary()
+    st.dataframe(run(sql), width="stretch", hide_index=True, column_config={
+        "from_date": st.column_config.DateColumn("From"), "to_date": st.column_config.DateColumn("To")})
+    sql_box(sql, "catalogue_summary")
+    only_sd = st.toggle("Sourdough only", value=True, key="cat_sd")
+    sql = q.catalogue_bakery(only_sd)
+    df = run(sql)
+    st.caption(f"{len(df):,} listings. Rs/100 g needs a pack size, which BigBasket titles usually omit.")
+    st.dataframe(df, width="stretch", hide_index=True,
+                 column_config={"last_seen": st.column_config.DateColumn("Last seen")})
+    sql_box(sql, "catalogue_bakery")
+
 # ---------------------------------------------------------------- real data --
 def real_data():
     st.markdown("**Real data.** Premium food culture per market, from Swiggy and Zomato *restaurant* "
-                "listings (Kaggle). Joined to sourdough penetration, which is synthetic until real scrapes land.")
+                "listings (Kaggle). The penetration column comes from the dataset picked in the sidebar.")
     sql = q.affinity(f)
     df = run(sql)
     st.dataframe(df, width="stretch", hide_index=True, column_config={
@@ -453,11 +512,13 @@ def ask_tab():
 
 # ----------------------------------------------------------------- layout --
 SECTIONS = {"💬 Ask": ask_tab, "Overview": overview, "Geography": geography, "Brands & price": brands_price,
-            "Availability": availability, "Search": search_tab, "Real data": real_data,
-            "SQL playground": playground}
-if check.rows == 0:  # e.g. synthetic excluded: only real-data views have anything to show
-    st.info("No quick-commerce sales rows match these filters. Ask, Real-data and SQL tabs are still available.")
-    SECTIONS = {k: SECTIONS[k] for k in ("💬 Ask", "Real data", "SQL playground")}
+            "Availability": availability, "Search": search_tab, "Real catalogues": catalogues,
+            "Restaurant data": real_data, "SQL playground": playground}
+if not SALES:  # no search scrapes in the real Blinkit file
+    SECTIONS.pop("Search")
+if check.rows == 0:
+    st.info("No rows match these filters. The Ask, catalogue, restaurant and SQL tabs are still available.")
+    SECTIONS = {k: SECTIONS[k] for k in ("💬 Ask", "Real catalogues", "Restaurant data", "SQL playground")}
 for tab, render in zip(st.tabs(list(SECTIONS)), SECTIONS.values()):
     with tab:
         render()

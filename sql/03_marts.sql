@@ -72,6 +72,7 @@ d AS (
            avg(mrp)                            AS avg_mrp,
            avg(discount_pct)                   AS avg_discount_pct,
            count(inventory_qty) > 0            AS has_inventory_signal,
+           count(rating_count) > 0             AS has_rating_signal,
            sum(units_depleted)                 AS units_depleted,
            sum(new_ratings)                    AS new_ratings,
            bool_or(is_synthetic)               AS is_synthetic
@@ -79,14 +80,14 @@ d AS (
     GROUP BY ALL
 )
 SELECT d.*,
-       CASE WHEN has_inventory_signal THEN 'inventory_depletion' ELSE 'rating_velocity' END AS est_method,
+       CASE WHEN has_inventory_signal THEN 'inventory_depletion'
+            WHEN has_rating_signal THEN 'rating_velocity' ELSE 'none' END AS est_method,
+       -- NULL, not 0, when the source has neither signal (e.g. Blinkit Kaggle prices): unknown, not zero
        CASE WHEN has_inventory_signal THEN units_depleted
-            ELSE new_ratings * p.orders_per_rating * p.units_per_order END AS est_units,
-       CASE WHEN in_stock_share >= p.min_avail
-            THEN (CASE WHEN has_inventory_signal THEN units_depleted
-                       ELSE new_ratings * p.orders_per_rating * p.units_per_order END) / in_stock_share
-            ELSE (CASE WHEN has_inventory_signal THEN units_depleted
-                       ELSE new_ratings * p.orders_per_rating * p.units_per_order END) END AS est_units_demand
+            WHEN has_rating_signal THEN new_ratings * p.orders_per_rating * p.units_per_order END AS est_units,
+       CASE WHEN has_inventory_signal THEN units_depleted
+            WHEN has_rating_signal THEN new_ratings * p.orders_per_rating * p.units_per_order END
+         / CASE WHEN in_stock_share >= p.min_avail THEN in_stock_share ELSE 1 END AS est_units_demand
 FROM d, p;
 
 -- Wide, BI-ready daily fact: every dimension you might slice by, pre-joined.

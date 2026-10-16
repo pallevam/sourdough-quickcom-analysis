@@ -15,7 +15,7 @@ SOURDOUGH_RE = re.compile(r"sour\s*-?\s*dough|levain|naturally\s+leavened", re.I
 RULES: list[tuple[int, re.Pattern]] = [(cid, re.compile(p, re.I)) for cid, p in [
     (702, r"ice\s*cream|kulfi|gelato"),   # before bakery: 'brownie ice cream tub'
     (120, r"(sour\s*dough|levain)\s+starter|\bstarter culture|\byeast\b"),
-    (107, r"(sour\s*dough).*(pizza|flatbread|pita)"),
+    (107, r"(sour\s*dough).*(pizza|flatbread|pita)|(pizza|flatbread|pita).*sour\s*dough"),
     (108, r"(sour\s*dough).*(cracker|crisp|toast|chip|lavash)"),
     (101, r"sour\s*-?\s*dough|levain|naturally\s+leavened"),
     (105, r"focaccia|baguette|ciabatta|bagel|brioche|croissant|sub roll"),

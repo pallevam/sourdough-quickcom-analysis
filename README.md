@@ -32,7 +32,16 @@ database dropdown (top right) to `qcom`, or write fully qualified names like `qc
 | `zepto.zip` | 765 Zepto SKUs from a single snapshot. No pincode, no timestamp, no brand column. **0 bread / sourdough SKUs.** | Loaded as a catalogue snapshot at location 0 ("national"). Useful for taxonomy and pricing, but not for trends. |
 | `swiggy.zip` (= `swiggy_data_coffee.zip`, byte-identical) | 140k Swiggy **food-delivery restaurants**, not Instamart, across 581 cities | `core.restaurant_listing` → `mart.market_affinity` (how much premium / western food culture each city has) |
 | `zomato.zip` | 45k Zomato restaurants, 98 cities | same as above |
+| `blinkit.zip` ([Kaggle](https://www.kaggle.com/datasets/tomtillo/blinkit-grocery-list-price-city-date), CC0) | Blinkit home-page products: about 2,600 products × 5 cities × 11 days (17 Jan – 1 Feb 2024). Price, MRP, pack size, out-of-stock flag. No pincode, stock count, rating or category. **0 sourdough.** | Real price / discount / availability data, one city-wide location per city. Sales estimates are NULL (no signal). Dashboard: *Dataset → Real: Blinkit*. Kolkata never shows a stock-out, which looks like a gap in the source. |
+| `bigbasket.zip` ([Kaggle](https://www.kaggle.com/datasets/surajjha101/bigbasket-entire-product-list-28k-datapoints), CC BY-NC-SA 4.0) | BigBasket catalogue, about 27,500 products, one date (Jun 2022), real brands and categories, pack sizes mostly missing. **3 real sourdough products** (The Baker's Dozen). | National catalogue snapshot (platform `bigbasket`); seeds the brand list used to guess Blinkit brands. Dashboard: *Real catalogues* tab. |
 | `zomato_data_coffee.zip`, `coffee_data_kaggle.zip` | Restaurant reviews; a single cafe's POS log | Not loaded (not relevant to quick-commerce) |
+
+Products are only matched across platforms when the pack size is known. Two listings on one
+platform are never merged, since titles often omit the variant or size.
+
+Data credits: Blinkit data by tomtillo on Kaggle (CC0 1.0). BigBasket data by surajjha101 on
+Kaggle, used under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/):
+non-commercial use, with attribution, and derivatives shared under the same licence.
 
 So **none of the real data can produce a sourdough sales trend yet**. That needs
 repeated, location-pinned scrapes (see *Collecting data* below). Until then,
@@ -82,9 +91,10 @@ pip install -e '.[dashboard]'
 streamlit run dashboard/app.py          # http://localhost:8501
 ```
 
-Sidebar filters: date range, category scope (sourdough / sourdough vs other bakery / all),
-metric, time grain, platform, region, tier, market (narrowed by region and tier),
-sub-category, brand, flour, and an include-synthetic toggle.
+Sidebar: a **Dataset** switch (synthetic sourdough panel, or real Blinkit Jan 2024), then
+date range, category scope, metric (sales estimates for synthetic; price, discount, in-stock
+share and products listed for both), time grain, platform, region, tier, market, sub-category,
+brand and flour. Charts that need sales estimates are hidden for the real Blinkit data.
 
 There are seven tabs:
 - Overview
@@ -92,7 +102,8 @@ There are seven tabs:
 - Brands & price
 - Availability
 - Search
-- Real data
+- Real catalogues (BigBasket, Blinkit, Zepto bakery and sourdough listings)
+- Restaurant data
 - SQL playground
 
 Under every chart, **"SQL for DuckDB UI"** shows the exact query that ran, with the

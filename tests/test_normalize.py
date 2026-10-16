@@ -37,6 +37,7 @@ def test_pack_size_distinguishes_products():
     ("Levain & Loaf Classic White Sourdough", 101),
     ("Whole Wheat Sourdough Loaf", 101),
     ("Sourdough Pizza Base 2 pc", 107),
+    ("Pizza Base - Sourdough 100% Wholewheat", 107),
     ("Sourdough Crackers Sea Salt", 108),
     ("Organic Sourdough Starter", 120),
     ("Harvest Multigrain Bread", 104),

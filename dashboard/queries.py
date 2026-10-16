@@ -10,8 +10,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-METRICS = {"est_gmv": "Est. GMV (Rs)", "est_units": "Est. units sold",
-           "est_units_demand": "Est. demand (incl. lost sales)"}
+DATASETS = {
+    "synthetic": "Synthetic sourdough panel (demo, Apr–Sep 2026)",
+    "blinkit": "Real: Blinkit prices, 5 cities (Jan 2024)",
+}
+# The real Blinkit file has prices and stock flags but no stock counts or ratings, so no sales estimate.
+SALES_METRICS = {"est_gmv": "Est. GMV (Rs)", "est_units": "Est. units sold",
+                 "est_units_demand": "Est. demand (incl. lost sales)"}
+PRICE_METRICS = {"avg_price": "Avg selling price (Rs)", "avg_discount": "Avg discount (%)",
+                 "availability": "In-stock share (%)", "listings": "Products listed"}
+METRICS = {**SALES_METRICS, **PRICE_METRICS}
+METRIC_AGG = {"est_gmv": "sum(est_gmv)", "est_units": "sum(est_units)",
+              "est_units_demand": "sum(est_units_demand)", "avg_price": "avg(avg_selling_price)",
+              "avg_discount": "avg(avg_discount_pct)", "availability": "100 * avg(in_stock_share)",
+              "listings": "count(DISTINCT listing_id)"}
+
+
+def has_sales(dataset: str) -> bool:
+    return dataset == "synthetic"
+
+
+def metrics_for(dataset: str) -> dict:
+    return METRICS if has_sales(dataset) else PRICE_METRICS
+
+
+def dataset_sql(dataset: str, prefix: str = "") -> str:
+    """Rows belonging to a dataset. Real catalogues (BigBasket, Zepto) sit at region 'Unknown', so they
+    never appear here; they have their own tab."""
+    return f"{prefix}is_synthetic" if dataset == "synthetic" else f"NOT {prefix}is_synthetic"
 GRAINS = ["day", "week", "month"]
 SCOPES = {"sourdough": "Sourdough only", "bakery": "Sourdough vs other bakery", "all": "All categories"}
 COLOR_BY = {"platform_code": "Platform", "region": "Region", "market": "Market", "tier": "City tier",
@@ -40,7 +66,7 @@ class Filters:
     flours: list[str] = field(default_factory=list)
     metric: str = "est_gmv"
     grain: str = "week"
-    include_synthetic: bool = True
+    dataset: str = "synthetic"
 
 
 def lit(v) -> str:
@@ -75,8 +101,7 @@ def where(f: Filters, c: dict = SALES, skip: tuple = (), extra: tuple = ()) -> s
             w.append(_in(col, vals))
     if "scope" not in skip:
         w += {"sourdough": [c["sourdough"]], "bakery": [f"{c['l1']} = 'Bakery'"], "all": []}[f.scope]
-    if not f.include_synthetic:
-        w.append(f"NOT {c['synthetic']}")
+    w.append(c["synthetic"] if f.dataset == "synthetic" else f"NOT {c['synthetic']}")
     return "WHERE " + "\n  AND ".join(w + list(extra))
 
 
@@ -98,6 +123,9 @@ def kpis(f):
        sum(est_units_demand) AS demand,
        sum(price_per_100g * est_units) / nullif(sum(est_units), 0) AS rs_per_100g,
        100 * avg(in_stock_share) AS availability_pct,
+       avg(avg_selling_price) AS avg_price,
+       avg(avg_discount_pct) AS avg_discount_pct,
+       avg(price_per_100g) AS avg_rs_per_100g,
        count(DISTINCT listing_id) AS skus
 FROM mart.sales_daily
 {where(f)}"""
@@ -111,27 +139,32 @@ FROM mart.sales_daily
 
 def trend(f, color: str):
     series = SEGMENT if color == "segment" else f"CAST({color} AS VARCHAR)"
-    full_len = {"day": "1", "week": "7", "month": "day(last_day(period))"}[f.grain]
+    step = {"day": "1 DAY", "week": "7 DAY", "month": "1 MONTH"}[f.grain]
     return f"""-- {f.grain}ly {f.metric} by {color}; series beyond the top 7 fold into 'Other'.
--- Partial {f.grain}s at the edges of the date range are dropped (they'd plot as a fake drop).
-WITH base AS (
-    SELECT date_trunc('{f.grain}', sales_date) AS period, {series} AS series,
-           sum({f.metric}) AS value, count(DISTINCT sales_date) AS days
-    FROM mart.sales_daily
+-- 'Other' re-aggregates already-aggregated series: exact for sums, approximate for averages.
+-- {f.grain.title()}s that run past the first or last date in view are dropped (they'd plot as a fake drop).
+WITH rows AS (
+    SELECT * FROM mart.sales_daily
     {where(f)}
+), base AS (
+    SELECT date_trunc('{f.grain}', sales_date) AS period, {series} AS series,
+           {METRIC_AGG[f.metric]} AS value
+    FROM rows
     GROUP BY 1, 2
 ), complete AS (
-    SELECT period FROM base GROUP BY period HAVING max(days) = {full_len}
+    SELECT DISTINCT period FROM base, (SELECT min(sales_date) AS lo, max(sales_date) AS hi FROM rows)
+    WHERE period >= lo AND period + INTERVAL {step} - INTERVAL 1 DAY <= hi
 ), ranked AS (
-    SELECT series, row_number() OVER (ORDER BY sum(value) DESC) AS rk FROM base GROUP BY series
+    SELECT series, row_number() OVER (ORDER BY sum(value) DESC NULLS LAST) AS rk FROM base GROUP BY series
 )
-SELECT period, CASE WHEN rk <= 7 THEN series ELSE 'Other' END AS series, sum(value) AS value
+SELECT period, CASE WHEN rk <= 7 THEN series ELSE 'Other' END AS series,
+       {"sum" if f.metric in SALES_METRICS or f.metric == "listings" else "avg"}(value) AS value
 FROM base JOIN ranked USING (series) JOIN complete USING (period)
 GROUP BY 1, 2 ORDER BY 1, 2"""
 
 
 def market_platform(f):
-    return f"""SELECT market, platform_code, sum({f.metric}) AS value
+    return f"""SELECT market, platform_code, {METRIC_AGG[f.metric]} AS value
 FROM mart.sales_daily
 {where(f)}
 GROUP BY 1, 2 ORDER BY 1, 2"""
@@ -149,7 +182,7 @@ ORDER BY 1, 2"""
 
 
 def city_map(f):
-    return f"""SELECT d.city_name, d.market, lo.lat, lo.lon, sum(d.{f.metric}) AS value
+    return f"""SELECT d.city_name, d.market, lo.lat, lo.lon, {METRIC_AGG[f.metric]} AS value
 FROM (SELECT * FROM mart.sales_daily
       {where(f)}) d
 JOIN mart.v_location lo USING (location_id)
@@ -174,7 +207,8 @@ def price_ladder(f):
 FROM mart.sales_daily
 {where(f)}
   AND price_per_100g IS NOT NULL
-GROUP BY ALL ORDER BY rs_per_100g DESC, canonical_name, platform_code"""
+GROUP BY ALL ORDER BY rs_per_100g DESC, canonical_name, platform_code
+LIMIT 60  -- the 60 priciest per 100 g; narrow the filters to see others"""
 
 
 def discount_response(f):
@@ -250,3 +284,46 @@ SELECT a.market, a.region, a.tier, a.restaurants,
 FROM mart.market_affinity a LEFT JOIN pen USING (market)
 WHERE {' AND '.join(w)}
 ORDER BY a.affinity_index DESC"""
+
+
+def oos_by_category(f):
+    """Out-of-stock rate by market x category. Works on both datasets (no sales needed)."""
+    return f"""SELECT market, l2 AS category,
+       100 * (1 - avg(in_stock_share)) AS oos_pct,
+       count(DISTINCT listing_id) AS products
+FROM mart.sales_daily
+{where(f, skip=("l3",))}
+GROUP BY 1, 2
+ORDER BY 1, 2"""
+
+
+CATALOGUE_PLATFORMS = ("bigbasket", "zepto", "blinkit")
+
+
+def catalogue_summary():
+    return """-- REAL data: what each real source lists in bakery, and how much of it is sourdough.
+SELECT l.platform_code,
+       min(CAST(s.scraped_at AS DATE)) AS from_date, max(CAST(s.scraped_at AS DATE)) AS to_date,
+       count(DISTINCT l.listing_id) AS products,
+       count(DISTINCT l.listing_id) FILTER (WHERE l.l1 = 'Bakery') AS bakery_products,
+       count(DISTINCT l.listing_id) FILTER (WHERE l.is_sourdough) AS sourdough_products
+FROM mart.v_listing l
+JOIN core.listing_snapshot s USING (listing_id)
+WHERE NOT s.is_synthetic
+GROUP BY 1 ORDER BY products DESC"""
+
+
+def catalogue_bakery(sourdough_only: bool):
+    cond = "l.is_sourdough" if sourdough_only else "l.l1 = 'Bakery'"
+    return f"""-- REAL data: bakery listings across the real sources, latest price seen.
+SELECT l.platform_code, l.brand_name, l.canonical_name AS product, l.l3 AS category, l.is_sourdough,
+       arg_max(s.selling_price, s.scraped_at) AS selling_price,
+       arg_max(s.mrp, s.scraped_at) AS mrp,
+       l.pack_grams,
+       round(100 * arg_max(s.selling_price, s.scraped_at) / nullif(l.pack_grams, 0), 1) AS rs_per_100g,
+       max(CAST(s.scraped_at AS DATE)) AS last_seen
+FROM mart.v_listing l
+JOIN core.listing_snapshot s USING (listing_id)
+WHERE NOT s.is_synthetic AND {cond}
+GROUP BY l.listing_id, l.platform_code, l.brand_name, l.canonical_name, l.l3, l.is_sourdough, l.pack_grams
+ORDER BY l.is_sourdough DESC, l.platform_code, selling_price DESC"""

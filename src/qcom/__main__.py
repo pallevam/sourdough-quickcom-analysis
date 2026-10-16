@@ -26,6 +26,10 @@ def cmd_load_kaggle(con, args):
     d = Path(args.dir)
     if (d / "zepto.zip").exists():
         kaggle.load_zepto(con, d / "zepto.zip")
+    if (d / "bigbasket.zip").exists():   # before Blinkit: its brands improve Blinkit brand guessing
+        kaggle.load_bigbasket(con, d / "bigbasket.zip")
+    if (d / "blinkit.zip").exists():
+        kaggle.load_blinkit(con, d / "blinkit.zip")
     if (d / "swiggy.zip").exists():
         kaggle.load_restaurants(con, d / "swiggy.zip", "swiggy_food", "swiggy_file.csv")
     if (d / "zomato.zip").exists():
