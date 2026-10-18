@@ -33,6 +33,9 @@ SCHEMA_OBJECTS = [
     ("mart", "market_affinity", "REAL data: premium food culture per market from Swiggy/Zomato restaurant listings."),
     ("mart", "v_listing", "Platform SKU with its product, brand and category."),
     ("mart", "v_location", "Pincode with city, state, region, tier, market, lat/lon."),
+    ("core", "listing", "Source product name, raw category, raw brand and pack-size text per platform SKU."),
+    ("core", "scrape_run", "Source file, source type, load timestamp and ingestion notes."),
+    ("ref", "platform", "Platform code and channel: quick commerce, e-grocery or food delivery."),
     ("core", "listing_snapshot", "Raw scrape rows: price, stock, inventory, rating_count per SKU x pincode x time."),
     ("core", "restaurant_listing", "REAL data: Swiggy/Zomato food-delivery restaurants (not quick commerce)."),
     ("ref", "model_param", "Assumptions behind the sales estimates."),
@@ -59,7 +62,7 @@ ENUMS = [  # (label, sql) - small value lists that help the model write correct 
 
 GUIDANCE = """\
 You answer questions about a quick-commerce analytics warehouse (Blinkit, Swiggy Instamart, Zepto and BigBasket
-in India), focused on sourdough bread. The people asking are friends and family of the analyst: answer in plain English,
+in India), across all product categories. Help analysts explore possible brand opportunities. Answer in plain English,
 lead with the answer, keep it short, and use Indian number formats (lakh = 1e5, crore = 1e7; Rs for rupees).
 
 How to work:
@@ -70,6 +73,14 @@ How to work:
 - Questions unrelated to this data: say briefly that you can only answer questions about this dataset.
 
 Facts you must respect:
+- Default to REAL observations (NOT is_synthetic) unless the user explicitly requests a demo.
+- Catalogue listing counts are not sales, demand or market share. Do not infer an opportunity from an absent
+  listing or stock-out alone. Distinguish sampling gaps, supply issues and demand hypotheses.
+- Source categories are available in core.listing.raw_category. Prefer them when available; canonical
+  taxonomy is provisional and can misclassify non-food products. Category labels differ by platform.
+- BigBasket is e-grocery, not necessarily BB Now. Swiggy restaurant data is NOT Instamart product data.
+- BigBasket/Zepto catalogue dates are ZIP metadata, not verified scrape dates. Do not invent trends.
+- pack_grams mixes mass and volume in the legacy parser. Avoid cross-category unit-price comparisons.
 - Platforms do not publish sales. est_units / est_gmv are ESTIMATES (inventory depletion or rating velocity,
   see est_method); est_units_demand adds sales lost to stock-outs. Say "estimated" when quoting them.
 - The warehouse mixes SYNTHETIC and REAL data. ALWAYS filter on is_synthetic, because platform_code

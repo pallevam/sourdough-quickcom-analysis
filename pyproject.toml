@@ -7,7 +7,7 @@ dependencies = ["duckdb>=1.1", "pandas>=2.0", "numpy>=1.24", "pyarrow>=14"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-dashboard = ["streamlit>=1.46", "plotly>=5.20", "anthropic>=1.15"]
+dashboard = ["streamlit>=1.65", "plotly>=5.20", "anthropic>=1.15"]
 
 [build-system]
 requires = ["setuptools>=68"]

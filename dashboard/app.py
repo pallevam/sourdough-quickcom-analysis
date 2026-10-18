@@ -1,6 +1,6 @@
-"""Sourdough quick-commerce explorer.  Run: streamlit run dashboard/app.py
+"""India quick-commerce explorer.  Run: streamlit run dashboard/app.py
 
-Sidebar filters compile into literal SQL (dashboard/queries.py). Each chart shows the
+Sidebar filters compile into literal SQL (dashboard/market_queries.py). Each chart shows the
 exact query it ran under "SQL for DuckDB UI", ready to paste into `duckdb -ui`.
 """
 
@@ -19,7 +19,7 @@ import plotly.express as px
 import streamlit as st
 
 import assistant as ai
-import queries as q
+import market_queries as mq
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))
@@ -27,10 +27,8 @@ DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))
 # Reference palette (dataviz skill): categorical slots in fixed order, light + dark steps.
 CAT_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 CAT_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
-OTHER = "#8f8e8a"
-SEQ_BLUE = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
 
-st.set_page_config(page_title="Sourdough quick-commerce explorer", page_icon="🍞", layout="wide")
+st.set_page_config(page_title="India quick-commerce explorer", page_icon=":material/storefront:", layout="wide")
 
 
 def secret(name: str, default: str | None = None) -> str | None:
@@ -48,7 +46,7 @@ def password_gate() -> None:
     expected = secret("APP_PASSWORD")
     if not expected or st.session_state.get("authed"):
         return
-    st.title("🍞 Sourdough on quick commerce")
+    st.title("India quick-commerce explorer")
     pw = st.text_input("Password", type="password")
     if pw and hmac.compare_digest(pw, expected):
         st.session_state.authed = True
@@ -81,9 +79,10 @@ def connection() -> duckdb.DuckDBPyConnection:
     return con
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300, max_entries=128)
 def run(sql: str) -> pd.DataFrame:
-    return connection().cursor().sql(sql).df()
+    with connection().cursor() as cur:
+        return cur.sql(sql).df()
 
 
 def is_dark() -> bool:
@@ -92,32 +91,6 @@ def is_dark() -> bool:
 
 def palette() -> list[str]:
     return CAT_DARK if is_dark() else CAT_LIGHT
-
-
-def ring() -> str:
-    """Surface-coloured 2px ring that separates overlapping marks."""
-    return "#0e1117" if is_dark() else "#ffffff"
-
-
-@st.cache_data
-def global_order(dim: str) -> list[str]:
-    """Entities by all-time GMV, so a series keeps its color whatever the filters."""
-    expr = q.SEGMENT if dim == "segment" else f"CAST({dim} AS VARCHAR)"
-    return run(f"SELECT {expr} AS v FROM mart.sales_daily WHERE region <> 'Unknown' "
-               f"GROUP BY 1 ORDER BY sum(est_gmv) DESC")["v"].tolist()
-
-
-def color_map(dim: str, present) -> dict[str, str]:
-    """Top-8 entities own a fixed slot; any other shown entity borrows an unused slot."""
-    pal, order = palette(), global_order(dim)
-    cmap = {v: pal[i] for i, v in enumerate(order[:8])}
-    free = [c for c in pal if c not in {cmap[v] for v in present if v in cmap}]
-    for v in present:
-        if v == "Other":
-            cmap[v] = OTHER
-        elif v not in cmap:
-            cmap[v] = free.pop(0) if free else OTHER
-    return cmap
 
 
 def sql_box(sql: str, key: str) -> None:
@@ -129,290 +102,171 @@ def sql_box(sql: str, key: str) -> None:
 def chart(fig, height=380, top=36, key=None):
     fig.update_layout(height=height, margin=dict(l=8, r=8, t=top, b=8), legend_title_text="",
                       hoverlabel=dict(namelength=-1))
-    st.plotly_chart(fig, width="stretch", theme="streamlit", key=key)
+    st.plotly_chart(fig, width="stretch", theme="streamlit", key=key, alt=fig.layout.title.text or "Query result chart")
 
 
-def heatmap(df, x, y, z, title, fmt=".0f"):
-    wide = df.pivot_table(index=y, columns=x, values=z, aggfunc="sum")
-    fig = px.imshow(wide, color_continuous_scale=SEQ_BLUE, aspect="auto", text_auto=fmt, title=title)
-    fig.update_traces(xgap=2, ygap=2)
-    fig.update_xaxes(side="top", title=None)
-    fig.update_yaxes(title=None)
-    fig.update_layout(title_y=0.99, title_yanchor="top")
-    chart(fig, height=max(320, 34 * len(wide) + 110), top=80)  # room for title + top axis labels
-
-
-def inr(v) -> str:
-    if v is None or pd.isna(v):
-        return "–"
-    return f"Rs {v / 1e7:,.2f} Cr" if v >= 1e7 else f"Rs {v / 1e5:,.1f} L" if v >= 1e5 else f"Rs {v:,.0f}"
-
-
-# ------------------------------------------------------------------ sidebar --
-
-@st.cache_data
-def options(sql: str) -> list:
-    return [v for v in run(sql).iloc[:, 0].tolist() if v is not None]
-
+# All category exploration uses actual observations, never a sales proxy.
+st.title("India quick-commerce explorer")
+st.caption("Explore observed assortment, brands, pack prices and availability across categories.")
 
 with st.sidebar:
-    dataset = st.radio("Dataset", list(q.DATASETS), format_func=q.DATASETS.get,
-                       help="The sourdough trends need sales estimates, which only the synthetic panel has. "
-                            "The real Blinkit file has prices and stock-outs for 5 cities, but no sourdough.")
-DS = q.dataset_sql(dataset)
-SALES = q.has_sales(dataset)
+    dataset = st.radio("Data", ["Real observations", "Synthetic demo"], key="dataset")
+    synthetic = dataset == "Synthetic demo"
+    st.caption("Empty selections include all available values. Filters apply to the four exploration views.")
 
-bounds = run(f"SELECT min(sales_date) AS lo, max(sales_date) AS hi FROM mart.sales_daily "
-             f"WHERE region <> 'Unknown' AND {DS}").iloc[0]
-lo, hi = bounds.lo.date(), bounds.hi.date()
-
-with st.sidebar:
-    st.header("Filters")
-    k = f"_{dataset}"  # per-dataset widget state: options and date bounds differ between datasets
-    picked = st.date_input("Date range", (lo, hi), min_value=lo, max_value=hi, key="dates" + k)
-    d_from, d_to = (picked if isinstance(picked, (tuple, list)) and len(picked) == 2 else (lo, hi))
-    scope = st.radio("Category scope", list(q.SCOPES), format_func=q.SCOPES.get, index=0 if SALES else 2,
-                     key="scope" + k, help=None if SALES else "This Blinkit file has no sourdough products.")
-    metrics = q.metrics_for(dataset)
-    metric = st.selectbox("Metric", list(metrics), format_func=metrics.get, key="metric" + k)
-    grain = st.segmented_control("Time grain", q.GRAINS, default="week" if SALES else "day", key="grain" + k) \
-        or ("week" if SALES else "day")
-    st.divider()
-    platforms = st.multiselect("Platform", options(
-        f"SELECT DISTINCT platform_code FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} ORDER BY 1"),
-        key="platforms" + k)
-    regions = st.multiselect("Region", options(
-        f"SELECT DISTINCT region FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} ORDER BY 1"), key="regions" + k)
-    tiers = st.multiselect("City tier", options(
-        f"SELECT DISTINCT tier FROM mart.sales_daily WHERE tier IS NOT NULL AND {DS} ORDER BY 1"), key="tiers" + k)
-    region_sql = f" AND {q._in('region', regions)}" if regions else ""
-    tier_sql = f" AND {q._in('tier', tiers)}" if tiers else ""
-    markets = st.multiselect("Market / city", options(
-        f"SELECT DISTINCT market FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS}{region_sql}{tier_sql} "
-        f"ORDER BY 1"), key="markets" + k)
-    scope_sql = {"sourdough": "is_sourdough", "bakery": "l1 = 'Bakery'", "all": "TRUE"}[scope]
-    l3s = st.multiselect("Sub-category", options(
-        f"SELECT DISTINCT l3 FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} AND {scope_sql} ORDER BY 1"),
-        key="l3s" + k)
-    brands = st.multiselect("Brand", options(
-        f"SELECT DISTINCT brand_name FROM mart.sales_daily WHERE region <> 'Unknown' AND {DS} AND {scope_sql} "
-        f"ORDER BY 1"), key="brands" + k)
-    flours = st.multiselect("Flour (sourdough)", options(
-        f"SELECT DISTINCT coalesce(flour, '(unspecified)') FROM mart.sales_daily WHERE is_sourdough AND {DS} "
-        f"ORDER BY 1"), key="flours" + k)
-
-f = q.Filters(date_from=d_from, date_to=d_to, platforms=platforms, regions=regions, tiers=tiers,
-              markets=markets, scope=scope, l3s=l3s, brands=brands, flours=flours, metric=metric,
-              grain=grain, dataset=dataset)
-metric_label = q.METRICS[metric]
-
-# ------------------------------------------------------------------- header --
-
-st.title("Sourdough on quick commerce")
-check = run(q.synthetic_check(f)).iloc[0]
-if SALES:
-    st.warning("**Synthetic data in view.** Brands, volumes and trends come from the simulated panel "
-               "(`python -m qcom synth`): use them to explore the method, not as market facts.", icon="⚠️")
+coverage = run(mq.coverage(synthetic))
+if synthetic:
+    st.warning("Synthetic demo: fictional bakery brands and simulated observations, not market evidence.")
 else:
-    st.info("**Real data: Blinkit home-page prices** for 5 cities, 17 Jan – 1 Feb 2024 (Kaggle, CC0). "
-            "Prices, discounts and stock-outs are real; there are **no sales figures and no sourdough** in "
-            "this file. See the Real catalogues tab for real sourdough listings.", icon="ℹ️")
+    st.info("Historical samples, not the whole market. BigBasket is e-grocery; Swiggy/Zomato files are "
+            "restaurant data. There are no real Instamart products or sales figures in this warehouse.")
 
-# ----------------------------------------------------------------- overview --
-def overview():
-    k = run(q.kpis(f)).iloc[0]
-    cols = st.columns(5)
-    fmt = lambda v, f_: f_.format(v) if pd.notna(v) else "–"
-    if SALES:
-        share = run(q.sourdough_share(f)).iloc[0, 0]
-        cols[0].metric("Est. units", fmt(k.units, "{:,.0f}"))
-        cols[1].metric("Est. GMV", inr(k.gmv))
-        cols[2].metric("Sourdough share of bakery GMV", fmt(share, "{:.1f}%"))
-        cols[3].metric("Avg Rs / 100 g", fmt(k.rs_per_100g, "{:,.1f}"))
-        cols[4].metric("Availability", fmt(k.availability_pct, "{:.1f}%"))
-        sql_box(q.kpis(f) + ";\n\n" + q.sourdough_share(f), "kpis")
+if coverage.empty:
+    st.info("No observations loaded for this dataset. Load source files or choose another dataset.")
+    st.stop()
+
+f = mq.MarketFilters(synthetic=synthetic)
+
+def choices(column):
+    return run(mq.options(f, column)).iloc[:, 0].tolist()
+
+with st.sidebar:
+    suffix = "_demo" if synthetic else "_real"
+    f.platforms = st.multiselect("Platform", choices("platform_code"), key="platforms" + suffix)
+    f.categories = st.multiselect("Category (source label or inferred fallback)", choices("category"), key="categories" + suffix)
+    f.brands = st.multiselect("Brand", choices("brand_name"), key="brands" + suffix)
+    f.markets = st.multiselect("Market / city", choices("market"), key="markets" + suffix,
+                               help="Unknown means no usable location; it does not establish national availability.")
+    f.search = st.text_input("Product search", key="search" + suffix, placeholder="Coffee, shampoo, pet food…")
+    if st.toggle("Restrict record dates", key="restrict_dates" + suffix):
+        lo, hi = coverage.first_record.min().date(), coverage.last_record.max().date()
+        dates = st.date_input("Record dates", (lo, hi), min_value=lo, max_value=hi, key="dates" + suffix)
+        if len(dates) != 2:
+            st.info("Choose both a start and end date.")
+            st.stop()
+        f.date_from, f.date_to = dates
+    st.caption("Zepto and BigBasket dates come from ZIP metadata, not verified observation dates.")
+    if st.button("Refresh query cache"):
+        st.cache_data.clear()
+        st.rerun()
+
+
+def table(sql, key):
+    df = run(sql)
+    st.dataframe(df, hide_index=True, alt=key.replace("_", " "))
+    st.download_button("Download CSV", df.to_csv(index=False), file_name=key + ".csv", mime="text/csv", key="csv_" + key)
+    sql_box(sql, key)
+    return df
+
+
+def assortment():
+    st.subheader("Assortment overview")
+    df = run(mq.products(f))
+    if df.empty:
+        st.info("No listings match these filters. Clear a selection or widen the record dates.")
+        return
+    with st.container(horizontal=True):
+        st.metric("Observed listings", f"{len(df):,}", border=True)
+        st.metric("Platforms", df.platform_code.nunique(), border=True)
+        st.metric("Category labels", df.category.nunique(), border=True)
+        st.metric("Known brand labels", df.loc[df.brand_name.ne("Unknown"), "brand_name"].nunique(), border=True)
+    st.caption("Counts are platform listings, not unique cross-platform products or market share. "
+               "Brand names may be inferred. Source category labels differ between platforms; inferred fallbacks need review.")
+    summary = run(mq.summary(f))
+    top = summary.head(20).copy()
+    top["Category / platform"] = top.category + " · " + top.platform_code
+    st.bar_chart(top, x="Category / platform", y="listings", horizontal=True,
+                 alt="Top 20 observed category and platform combinations by listing count")
+    table(mq.summary(f), "category_coverage")
+    st.subheader("Product explorer")
+    st.caption("One row per platform listing. Prices average its valid observations in the selected slice. "
+               "Pack sizes differ; prices are not unit-normalised. Stock percentages use known stock observations only.")
+    table(mq.products(f), "products")
+
+
+def brands_prices():
+    st.subheader("Brands and pack prices")
+    st.caption("Compare within a category and source period. Each listing contributes one average pack price "
+               "to the median and quartiles. Counts describe catalogue presence, not brand sales share.")
+    df = table(mq.summary(f, "brand_name"), "brand_comparison")
+    if not df.empty:
+        top = df.head(20).copy()
+        top["Brand / platform"] = top.brand_name.fillna("Unknown") + " · " + top.platform_code
+        st.bar_chart(top, x="Brand / platform", y="listings", horizontal=True,
+                     alt="Top 20 brand and platform combinations by observed listings")
+
+
+def trends_availability():
+    st.subheader("Price and availability observations")
+    st.caption("Only observation timestamps appear in trends. Archive-dated catalogues are excluded. "
+               "Daily averages are observation-weighted and can change with assortment mix; they are not inflation measures.")
+    df = run(mq.trend(f))
+    if df.empty or df.record_date.nunique() < 2:
+        st.info("This selection has no multi-day observations with a usable observation timestamp.")
     else:
-        cols[0].metric("Products listed", fmt(k.skus, "{:,.0f}"))
-        cols[1].metric("Avg selling price", fmt(k.avg_price, "Rs {:,.0f}"))
-        cols[2].metric("Avg discount", fmt(k.avg_discount_pct, "{:.1f}%"))
-        cols[3].metric("Avg Rs / 100 g", fmt(k.avg_rs_per_100g, "{:,.1f}"))
-        cols[4].metric("In stock", fmt(k.availability_pct, "{:.1f}%"))
-        sql_box(q.kpis(f), "kpis")
+        df["Series"] = df.platform_code + " · " + df.market
+        metric = st.selectbox("Trend metric", ["avg_pack_price", "in_stock_pct", "listings"],
+                              format_func={"avg_pack_price": "Average pack price (Rs)",
+                                           "in_stock_pct": "In stock (%)", "listings": "Observed listings"}.get)
+        st.line_chart(df, x="record_date", y=metric, color="Series", alt="Daily observations by platform and market")
+        sql_box(mq.trend(f), "observed_trend")
+    st.caption("Missing stock data stays blank. Stock-outs can reflect supply issues or scrape gaps as well as demand. "
+               "The historical Blinkit Kolkata sample records no stock-outs; validate before comparing cities.")
+    table(mq.availability(f), "availability")
 
-    color = st.segmented_control("Colour by", list(q.COLOR_BY), format_func=q.COLOR_BY.get,
-                                 default="segment" if scope == "bakery" else ("platform_code" if SALES else "market"),
-                                 key="color_" + dataset) or "platform_code"
-    sql = q.trend(f, color)
-    df = run(sql)
-    fig = px.line(df, x="period", y="value", color="series", title=f"{metric_label} by {q.COLOR_BY[color].lower()}",
-                  color_discrete_map=color_map(color, df.series.unique()),
-                  labels={"value": metric_label, "period": "", "series": q.COLOR_BY[color]})
-    fig.update_traces(line_width=2)
-    fig.update_layout(hovermode="x unified")
-    chart(fig, 420)
-    sql_box(sql, "trend")
 
-# ---------------------------------------------------------------- geography --
-def geography():
-    left, right = st.columns(2)
-    with left:
-        sql = q.market_platform(f)
-        heatmap(run(sql), "platform_code", "market", "value", f"{metric_label}: market × platform", ",.0f")
-        sql_box(sql, "market_platform")
-    with right:
-        sql = q.city_map(f)
-        df = run(sql)
-        fig = px.scatter_geo(df, lat="lat", lon="lon", size="value", hover_name="city_name",
-                             hover_data={"market": True, "value": ":,.0f", "lat": False, "lon": False},
-                             title=f"{metric_label} by city", size_max=40)
-        fig.update_traces(marker=dict(color=palette()[0], opacity=0.75, line=dict(width=2, color=ring())))
-        fig.update_geos(lataxis_range=[6, 37], lonaxis_range=[67, 98], showcountries=True,
-                        showland=True, landcolor="rgba(128,128,128,0.08)", bgcolor="rgba(0,0,0,0)",
-                        projection_type="mercator")
-        chart(fig, 520)
-        sql_box(sql, "city_map")
-    if not SALES:
-        return
-    sql = q.tier_share(f)
-    df = run(sql)
-    fig = px.line(df, x="month", y="sd_share_of_bakery_gmv_pct", color="tier", markers=True,
-                  title="Sourdough share of bakery GMV by city tier (full months)",
-                  color_discrete_map={t: palette()[i] for i, t in enumerate(["Tier 1", "Tier 2", "Tier 3"])},
-                  labels={"sd_share_of_bakery_gmv_pct": "% of bakery GMV", "month": ""})
-    fig.update_traces(line_width=2, marker_size=8)
-    fig.update_layout(hovermode="x unified")
-    chart(fig)
-    sql_box(sql, "tier_share")
+def research():
+    st.subheader("Category research shortlist")
+    st.write("Use these signals to choose where to investigate: assortment breadth, brand choice, price spread, "
+             "discounting and observed availability. None establishes unmet demand on its own.")
+    st.caption("Grouped within each platform and category. Prices are per pack; broad price spreads may simply "
+               "reflect different products or pack sizes. Missing categories and uneven sampling can look like gaps.")
+    table(mq.summary(f), "research_shortlist")
+    with st.expander("What to validate before a brand decision"):
+        st.markdown("- A comparable product and pack-size segment.\n"
+                    "- Repeated observations across target pincodes and competing platforms.\n"
+                    "- Demand evidence beyond assortment counts and stock-outs.\n"
+                    "- Margin, platform fees, fulfilment, returns and repeat purchase.\n"
+                    "- Source provenance and permitted dataset use.")
 
-# ------------------------------------------------------------ brands & price --
-def brands_price():
-    if SALES:
-        sql = q.brand_share(f)
-        heatmap(run(sql), "brand_name", "market", "gmv_share_pct", "Brand share of GMV within each market (%)", ".1f")
-        sql_box(sql, "brand_share")
 
-    sql = q.price_ladder(f)
-    df = run(sql)
-    fig = px.scatter(df, x="rs_per_100g", y="canonical_name", color="platform_code",
-                     color_discrete_map=color_map("platform_code", df.platform_code.unique()),
-                     hover_data=["brand_name", "avg_selling_price", "avg_discount_pct"],
-                     title="Price ladder: Rs per 100 g by product and platform",
-                     labels={"rs_per_100g": "Rs per 100 g", "canonical_name": "", "platform_code": "Platform"})
-    fig.update_traces(marker=dict(size=10, line=dict(width=2, color=ring())))
-    fig.update_yaxes(categoryorder="total ascending")
-    chart(fig, max(380, 26 * df.canonical_name.nunique() + 120))
-    sql_box(sql, "price_ladder")
+def sources():
+    st.subheader("Source coverage and data quality")
+    st.caption("Whole selected dataset; exploration filters do not apply to this view.")
+    table(mq.coverage(synthetic), "source_coverage")
+    st.markdown("**Category quality:** source labels are preserved in the explorer. Where absent, the existing "
+                "rule-based taxonomy is a fallback, not a verified classification.\n\n"
+                "**Units:** the legacy parser treats millilitres as grams. The generic explorer therefore uses "
+                "pack prices and does not present universal Rs/100 g comparisons.\n\n"
+                "**Freshness:** BigBasket and Zepto record dates are archive timestamps. These samples must not "
+                "be read as current platform inventory or a common-period price comparison.")
+    st.subheader("Restaurant context (real data)")
+    st.caption("Food-delivery listings are kept separate from product assortment and brand-opportunity metrics.")
+    table("SELECT p.platform_code, count(*) AS restaurant_rows, count(DISTINCT city_id) AS cities "
+          "FROM core.restaurant_listing r JOIN ref.platform p USING (platform_id) GROUP BY 1", "restaurant_coverage")
+    with st.expander("Load provenance"):
+        st.dataframe(run("SELECT source_type, source_file, loaded_at, row_count, notes FROM core.scrape_run ORDER BY run_id"),
+                     hide_index=True, alt="File ingestion provenance")
 
-    if not SALES:
-        return
-    sql = q.discount_response(f)
-    df = run(sql)
-    fig = px.bar(df, x="discount_band", y="avg_units_per_sku_day", color="segment", barmode="group",
-                 category_orders={"discount_band": ["0-5%", "5-12%", "12%+"]},
-                 color_discrete_map=color_map("segment", df.segment.unique()),
-                 title="Promo response: avg units per SKU-day by discount band",
-                 labels={"avg_units_per_sku_day": "Units / SKU-day", "discount_band": "Discount", "segment": ""},
-                 hover_data=["sku_location_days"])
-    fig.update_layout(bargap=0.35, bargroupgap=0.08, showlegend=df.segment.nunique() > 1)
-    chart(fig)
-    sql_box(sql, "discount_response")
 
-# ------------------------------------------------------------- availability --
-def availability():
-    sql = q.oos_by_category(f)
-    heatmap(run(sql), "category", "market", "oos_pct", "Out-of-stock rate (%) by market and category", ".1f")
-    sql_box(sql, "oos_by_category")
-    if not SALES:
-        st.caption("The Blinkit file has one reading per city per day, so there's no time-of-day view.")
-        return
-
-    sql = q.oos_heatmap(f)
-    df = run(sql)
-    df["weekday"] = pd.Categorical(df.weekday, ["Monday", "Tuesday", "Wednesday", "Thursday",
-                                                "Friday", "Saturday", "Sunday"], ordered=True)
-    df["hour"] = df.hour.map(lambda h: f"{h:02d}:00")
-    heatmap(df, "hour", "weekday", "oos_pct", "Out-of-stock rate (%) by scrape hour and weekday", ".1f")
-    st.caption("Scrapes run at 07, 12, 17 and 22h. Late-day stock-outs = demand the store couldn't serve.")
-    sql_box(sql, "oos_heatmap")
-
-    sql = q.lost_demand(f)
-    st.subheader("Where stock-outs cost the most")
-    st.dataframe(run(sql), width="stretch", hide_index=True)
-    sql_box(sql, "lost_demand")
-
-# ------------------------------------------------------------------- search --
-def search_tab():
-    terms = options("SELECT DISTINCT search_term FROM core.search_result ORDER BY 1")
-    term = st.selectbox("Search term", terms, index=terms.index("sourdough") if "sourdough" in terms else 0)
-    sql = q.search_share(f, term)
-    df = run(sql)
-    st.caption("Search data covers platform, market and date filters only.")
-    fig = px.bar(df, x="share_of_top10_pct", y="brand_name", color="brand_name", facet_col="platform_code",
-                 orientation="h", color_discrete_map=color_map("brand_name", df.brand_name.unique()),
-                 title=f'Share of top-10 results for "{term}"',
-                 labels={"share_of_top10_pct": "% of top-10 slots", "brand_name": ""},
-                 hover_data=["avg_rank", "sponsored_slot_pct"])
-    fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-    fig.update_layout(showlegend=False, bargap=0.3)
-    chart(fig)
-    st.dataframe(df.round(1), width="stretch", hide_index=True)
-    sql_box(sql, "search")
-
-# ------------------------------------------------------------ catalogues --
-def catalogues():
-    st.markdown("**Real product listings** from BigBasket (catalogue, Jun 2022, CC BY-NC-SA 4.0), "
-                "Blinkit (5 cities, Jan 2024, CC0) and Zepto (catalogue). Not affected by the sidebar filters.")
-    sql = q.catalogue_summary()
-    st.dataframe(run(sql), width="stretch", hide_index=True, column_config={
-        "from_date": st.column_config.DateColumn("From"), "to_date": st.column_config.DateColumn("To")})
-    sql_box(sql, "catalogue_summary")
-    only_sd = st.toggle("Sourdough only", value=True, key="cat_sd")
-    sql = q.catalogue_bakery(only_sd)
-    df = run(sql)
-    st.caption(f"{len(df):,} listings. Rs/100 g needs a pack size, which BigBasket titles usually omit.")
-    st.dataframe(df, width="stretch", hide_index=True,
-                 column_config={"last_seen": st.column_config.DateColumn("Last seen")})
-    sql_box(sql, "catalogue_bakery")
-
-# ---------------------------------------------------------------- real data --
-def real_data():
-    st.markdown("**Real data.** Premium food culture per market, from Swiggy and Zomato *restaurant* "
-                "listings (Kaggle). The penetration column comes from the dataset picked in the sidebar.")
-    sql = q.affinity(f)
-    df = run(sql)
-    st.dataframe(df, width="stretch", hide_index=True, column_config={
-        "affinity_index": st.column_config.ProgressColumn("Affinity index", min_value=float(df.affinity_index.min()),
-                                                          max_value=float(df.affinity_index.max()), format="%.2f")})
-    sql_box(sql, "affinity")
-
-# ----------------------------------------------------------- sql playground --
 def playground():
-    st.markdown("Read-only connection: any `SELECT`, `SUMMARIZE`, `DESCRIBE`, `PIVOT` works; writes are rejected. "
-                "Start from any query above.")
-    default = q.trend(f, "platform_code")
-    sql = st.text_area("SQL", default, height=260)
+    st.caption("Read-only SQL over the whole warehouse. Start with the current filtered category query.")
+    sql = st.text_area("SQL", mq.summary(f), height=260)
     if st.button("Run", type="primary"):
-        try:
-            rel = connection().cursor().sql(sql)
-            if rel is None:
-                st.success("Statement executed.")
-            else:
-                out = rel.limit(10_000).df()
-                st.caption(f"{len(out):,} rows (capped at 10,000)")
-                st.dataframe(out, width="stretch", hide_index=True)
-        except duckdb.Error as e:
-            st.error(str(e))
+        result = ai.run_sql(connection(), sql)
+        if result.error:
+            st.error(result.error)
+        else:
+            st.dataframe(result.df, hide_index=True, alt="SQL query result")
+            st.caption(f"Up to {ai.ROWS_TO_UI:,} rows; queries time out after {ai.QUERY_TIMEOUT_S} seconds.")
 
 
-# --------------------------------------------------------------- ask (chat) --
 EXAMPLES = [
-    "Which city is growing fastest for sourdough?",
-    "How much more does sourdough cost than regular bread, per 100 g?",
-    "Which brand leads in South India, and on which platform?",
-    "Where do stock-outs lose the most sales?",
-    "Which cities have the most premium food culture (real data)?",
+    "Which categories have the most real Zepto listings?",
+    "Compare brand assortment within BigBasket beverages.",
+    "Which Blinkit categories have the weakest observed availability?",
+    "What data is missing before I can assess a brand opportunity?",
 ]
-
 
 @st.cache_resource
 def system_prompt() -> str:
@@ -458,7 +312,7 @@ def show_turn(turn: ai.Turn, n: int) -> None:
                     if r.error:
                         st.caption(f"Error (the assistant retried): {r.error[:300]}")
                     else:
-                        st.dataframe(r.df.head(200), hide_index=True, width="stretch", key=f"chat_df_{n}_{i}")
+                        st.dataframe(r.df.head(200), alt="Assistant query result", hide_index=True, width="stretch", key=f"chat_df_{n}_{i}")
 
 
 def ask_tab():
@@ -510,15 +364,8 @@ def ask_tab():
         st.caption(f"Session usage: {tokens[0]:,} input / {tokens[1]:,} output tokens.")
 
 
-# ----------------------------------------------------------------- layout --
-SECTIONS = {"💬 Ask": ask_tab, "Overview": overview, "Geography": geography, "Brands & price": brands_price,
-            "Availability": availability, "Search": search_tab, "Real catalogues": catalogues,
-            "Restaurant data": real_data, "SQL playground": playground}
-if not SALES:  # no search scrapes in the real Blinkit file
-    SECTIONS.pop("Search")
-if check.rows == 0:
-    st.info("No rows match these filters. The Ask, catalogue, restaurant and SQL tabs are still available.")
-    SECTIONS = {k: SECTIONS[k] for k in ("💬 Ask", "Real catalogues", "Restaurant data", "SQL playground")}
-for tab, render in zip(st.tabs(list(SECTIONS)), SECTIONS.values()):
-    with tab:
-        render()
+SECTIONS = {"Assortment": assortment, "Brands and prices": brands_prices,
+            "Trends and availability": trends_availability, "Research shortlist": research,
+            "Data coverage": sources, "Ask": ask_tab, "SQL playground": playground}
+selected_view = st.selectbox("Explore", list(SECTIONS), key="view")
+SECTIONS[selected_view]()

@@ -1,10 +1,12 @@
-# Quick-commerce sourdough analysis
+# India quick-commerce research
 
-A DuckDB warehouse for product data scraped from Blinkit, Swiggy Instamart and Zepto
-(BB Now and Flipkart Minutes are pre-registered too). You can slice it by **platform ×
-product category × geography (pincode → city → metro cluster → state → region / tier)
-× time**, and it estimates sales, which platforms do not publish. Sourdough bread is the
-first category explored.
+A DuckDB warehouse and Streamlit explorer for category-wide assortment, brand, pricing
+and availability research. The dashboard defaults to **real observations across all
+categories**, with an explicitly separate synthetic bakery demo.
+
+The supplied data supports historical catalogue research, not current sales, market
+share or a proven brand opportunity. See [the repository review](docs/repository-review.md)
+for measured coverage, prioritised issues and the next implementation steps.
 
 ```bash
 pip install -e '.[dev]'          # or: PYTHONPATH=src python3 -m qcom ...
@@ -32,8 +34,8 @@ database dropdown (top right) to `qcom`, or write fully qualified names like `qc
 | `zepto.zip` | 765 Zepto SKUs from a single snapshot. No pincode, no timestamp, no brand column. **0 bread / sourdough SKUs.** | Loaded as a catalogue snapshot at location 0 ("national"). Useful for taxonomy and pricing, but not for trends. |
 | `swiggy.zip` (= `swiggy_data_coffee.zip`, byte-identical) | 140k Swiggy **food-delivery restaurants**, not Instamart, across 581 cities | `core.restaurant_listing` → `mart.market_affinity` (how much premium / western food culture each city has) |
 | `zomato.zip` | 45k Zomato restaurants, 98 cities | same as above |
-| `blinkit.zip` ([Kaggle](https://www.kaggle.com/datasets/tomtillo/blinkit-grocery-list-price-city-date), CC0) | Blinkit home-page products: about 2,600 products × 5 cities × 11 days (17 Jan – 1 Feb 2024). Price, MRP, pack size, out-of-stock flag. No pincode, stock count, rating or category. **0 sourdough.** | Real price / discount / availability data, one city-wide location per city. Sales estimates are NULL (no signal). Dashboard: *Dataset → Real: Blinkit*. Kolkata never shows a stock-out, which looks like a gap in the source. |
-| `bigbasket.zip` ([Kaggle](https://www.kaggle.com/datasets/surajjha101/bigbasket-entire-product-list-28k-datapoints), CC BY-NC-SA 4.0) | BigBasket catalogue, about 27,500 products, one date (Jun 2022), real brands and categories, pack sizes mostly missing. **3 real sourdough products** (The Baker's Dozen). | National catalogue snapshot (platform `bigbasket`); seeds the brand list used to guess Blinkit brands. Dashboard: *Real catalogues* tab. |
+| `blinkit.zip` ([Kaggle](https://www.kaggle.com/datasets/tomtillo/blinkit-grocery-list-price-city-date), CC0) | Blinkit home-page products: about 2,600 products × 5 cities × 11 days (17 Jan – 1 Feb 2024). Price, MRP, pack size, out-of-stock flag. No pincode, stock count, rating or category. **0 sourdough.** | Real price / discount / availability data, one city-wide location per city. Sales estimates are NULL (no signal). Dashboard: *Real observations → Platform: blinkit*. Kolkata never shows a stock-out, which looks like a gap in the source. |
+| `bigbasket.zip` ([Kaggle](https://www.kaggle.com/datasets/surajjha101/bigbasket-entire-product-list-28k-datapoints), CC BY-NC-SA 4.0) | BigBasket catalogue, about 27,500 products, one date (Jun 2022), real brands and categories, pack sizes mostly missing. **3 real sourdough products** (The Baker's Dozen). | National catalogue snapshot (platform `bigbasket`); seeds the brand list used to guess Blinkit brands. Dashboard: *Assortment → Platform: bigbasket*. |
 | `zomato_data_coffee.zip`, `coffee_data_kaggle.zip` | Restaurant reviews; a single cafe's POS log | Not loaded (not relevant to quick-commerce) |
 
 Products are only matched across platforms when the pack size is known. Two listings on one
@@ -43,7 +45,7 @@ Data credits: Blinkit data by tomtillo on Kaggle (CC0 1.0). BigBasket data by su
 Kaggle, used under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/):
 non-commercial use, with attribution, and derivatives shared under the same licence.
 
-So **none of the real data can produce a sourdough sales trend yet**. That needs
+None of these real product datasets provides validated sales or GMV trends for any category. That needs
 repeated, location-pinned scrapes (see *Collecting data* below). Until then,
 `python -m qcom synth` loads a **synthetic** panel so the schema, estimators and
 queries can be built and validated end to end:
@@ -91,32 +93,36 @@ pip install -e '.[dashboard]'
 streamlit run dashboard/app.py          # http://localhost:8501
 ```
 
-Sidebar: a **Dataset** switch (synthetic sourdough panel, or real Blinkit Jan 2024), then
-date range, category scope, metric (sales estimates for synthetic; price, discount, in-stock
-share and products listed for both), time grain, platform, region, tier, market, sub-category,
-brand and flour. Charts that need sales estimates are hidden for the real Blinkit data.
+The dashboard has seven views:
 
-There are seven tabs:
-- Overview
-- Geography (including a city map)
-- Brands & price
-- Availability
-- Search
-- Real catalogues (BigBasket, Blinkit, Zepto bakery and sourdough listings)
-- Restaurant data
-- SQL playground
+- **Assortment:** observed listing counts, category coverage, searchable products, CSV exports.
+- **Brands and prices:** listing counts and pack-price distributions within platforms.
+- **Trends and availability:** observed daily prices and stock flags; archive-dated catalogues are excluded.
+- **Research shortlist:** category signals to investigate, without claiming demand or market share.
+- **Data coverage:** source periods, timestamp basis, geography, missing stock and ingestion provenance.
+- **Ask:** category-wide natural-language SQL assistant.
+- **SQL playground:** read-only queries with statement checks, timeout and result cap.
 
-Under every chart, **"SQL for DuckDB UI"** shows the exact query that ran, with the
-filter values inlined. Copy it into `duckdb -ui` to keep exploring. The query builders
-live in `dashboard/queries.py`, and `tests/test_dashboard_queries.py` runs each of them
-across several filter combinations.
+Filters cover platform, source category (or an explicitly inferred fallback), brand, city,
+product search and optional record dates. Empty selections mean all values. The four
+exploration views share filters; coverage, chat and arbitrary SQL have their own stated scope.
+Only the selected view executes. Query results are cached for five minutes, with manual refresh.
+
+Prices are **per pack**, not unit-normalised: the legacy parser conflates mass and volume.
+Unknown stock is blank, not out of stock. Category labels differ between sources and some
+inferred classifications are wrong. The default 30,918 real listings span three sources
+and different years; they are not a single-period market panel.
+
+Each result table offers CSV and exact SQL downloads. The generic builders live in
+`dashboard/market_queries.py`; legacy sourdough builders remain in `dashboard/queries.py`.
+Historical sourdough reports and synthetic estimation marts remain accessible through the CLI/SQL.
 
 The dashboard opens `data/qcom.duckdb` **read-only**, so it can run alongside the DuckDB
 UI. `python -m qcom build/load/synth` needs a write lock, so stop both before reloading data.
 
 ### Ask tab (chat)
 
-The first tab answers plain-English questions. Claude writes DuckDB SQL, runs it through
+The Ask view answers plain-English questions. Claude writes DuckDB SQL, runs it through
 `run_sql` in `dashboard/assistant.py`, and replies with the answer, a chart when the result has
 an obvious shape, and every query it ran ("How I got this").
 
@@ -133,7 +139,7 @@ an obvious shape, and every query it ran ("How I got this").
 
 ## Deploying (Streamlit Community Cloud)
 
-Free hosting from a GitHub repo. The repo stays small (about 4 MB): the database isn't committed,
+Free hosting from a GitHub repo. The database is not committed,
 and on first start the app runs `python -m qcom build` itself (about 10 s).
 
 1. Push this folder to a **private** GitHub repo. `.gitignore` already excludes the database,
@@ -196,7 +202,7 @@ SHA-256 it has already seen) and lineage. Full spec: `src/qcom/ingest/snapshots.
 - **search:** `platform, platform_sku, scraped_at, search_term, rank_position` + optional
   `pincode, locality, city, is_sponsored`
 
-Recommended panel for sourdough:
+Legacy example panel for sourdough (adapt locations, frequency and search terms to each research category):
 - **Locations:** 2–3 pincodes in each of ~15 cities, across tiers.
 - **Product scrapes:** about 4 per day, with the first just after stores open.
 - **Search scrape:** daily, for `sourdough`, `bread`, `artisan bread` and `focaccia`.
@@ -224,3 +230,29 @@ rates low, and prefer a licensed data vendor for anything commercial.
 - **Calibration:** brand-disclosed numbers (D2C/Shark-Tank-style interviews, investor
   decks), and Redseer or other industry reports for total quick-commerce GMV by city.
   Use them to sanity-check the scale of the estimates.
+
+## Automatic updates from main
+
+Configure the Streamlit Community Cloud app with:
+
+- Repository: `pallevam/sourdough-quickcom-analysis`
+- Branch: `main`
+- Main file: `dashboard/app.py`
+- Python: `3.12`
+
+Community Cloud automatically picks up commits pushed or merged to that configured
+branch. Dependency changes trigger a redeploy. No deployment token, GitHub Actions
+webhook or custom polling job is required. See the
+[Streamlit deployment documentation](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app).
+
+`.github/workflows/tests.yml` builds a fresh warehouse and runs the tests on pull
+requests and pushes to `main`. The usual workflow is a feature branch → pull request
+→ passing `Tests / test` check → merge to `main` → automatic Streamlit update.
+The test workflow itself does not deploy. Community Cloud does not wait for the
+push-triggered tests, so require the PR test check in GitHub branch protection if
+you want tests to gate merges; this repository change does not enable branch protection.
+
+For an already-deployed app, verify its repository, branch and entry point in the
+Community Cloud management UI. After a merge, check the app logs and reload the
+page. If an update is stuck, use **Manage app → Reboot app**. Localhost servers are
+separate: a remote merge does not pull code onto a local machine automatically.
