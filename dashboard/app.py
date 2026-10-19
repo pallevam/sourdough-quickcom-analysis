@@ -19,9 +19,11 @@ import streamlit as st
 
 import assistant as ai
 import market_queries as mq
-from qcom.db import validate
-
+# Community Cloud installs requirements without installing this src-layout package.
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+from qcom.db import validate
 DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom-observations-v2.duckdb"))
 
 st.set_page_config(page_title="India quick-commerce explorer", page_icon=":material/storefront:", layout="wide")
