@@ -81,11 +81,3 @@ INSERT OR IGNORE INTO ref.platform_category_map VALUES
     (6, 'eggs, meat & fish',        801),
     (6, 'kitchen, garden & pets',   951),
     (6, 'cleaning & household',     951);
-
-INSERT OR IGNORE INTO ref.model_param VALUES
-    ('orders_per_rating', 30,
-     'Orders per new rating. Used when a platform does not expose inventory. Calibrate per platform/category against a panel where both signals exist.'),
-    ('units_per_order', 1.1,
-     'Average units of one SKU per order containing it.'),
-    ('min_availability_for_uplift', 0.25,
-     'Below this in-stock share, do not inflate observed units to unconstrained demand (too noisy).');

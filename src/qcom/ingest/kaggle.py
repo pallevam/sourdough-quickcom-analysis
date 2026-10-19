@@ -22,7 +22,6 @@ import pandas as pd
 
 from qcom import db
 from qcom.ingest.snapshots import load_snapshot_frame
-from qcom.normalize import guess_brand
 
 
 def _read_member(zip_path: Path, suffix: str) -> tuple[pd.DataFrame, datetime]:
@@ -38,14 +37,13 @@ def load_zepto(con, zip_path: Path) -> int:
         print(f"skip {zip_path.name}: already loaded")
         return 0
     raw, file_date = _read_member(zip_path, "Zepto_data.csv")
-    known = set(con.execute("SELECT brand_key FROM ref.brand").df()["brand_key"])
     df = pd.DataFrame({
         "platform": "zepto",
         "platform_sku": [hashlib.sha1(f"{n}|{p}".encode()).hexdigest()[:12]
                          for n, p in zip(raw.Product_name, raw.Packsize)],
         "scraped_at": file_date,
         "product_name": raw.Product_name,
-        "brand": [guess_brand(n, known) for n in raw.Product_name],
+        "brand": None,
         "platform_category": raw.Category.str.lower(),
         "pack_size": raw.Packsize,
         "selling_price": raw.Price,
@@ -70,7 +68,7 @@ def _sku(*parts) -> str:
 
 
 def load_bigbasket(con, zip_path: Path) -> int:
-    """Load first: its brand column seeds the brand list used to guess Blinkit brands."""
+    """Load source-reported brands and categories."""
     run_id = db.start_run(con, "kaggle", zip_path, "BigBasket catalogue (Kaggle, CC BY-NC-SA 4.0); national, one date")
     if run_id is None:
         print(f"skip {zip_path.name}: already loaded")
@@ -100,7 +98,6 @@ def load_blinkit(con, zip_path: Path) -> int:
         return 0
     raw, _ = _read_member(zip_path, "blinkit_retail.csv")
     raw = raw.dropna(subset=["Title"]).drop_duplicates(["Title", "Details", "Place", "Date"])
-    known = set(con.execute("SELECT brand_key FROM ref.brand").df()["brand_key"])
     sp = raw["Price_discount"].map(_rupees)
     df = pd.DataFrame({
         "platform": "blinkit",
@@ -110,11 +107,11 @@ def load_blinkit(con, zip_path: Path) -> int:
         "locality": raw["Place"] + " (city-wide)",   # no pincode in the source: one location per city
         "city": raw["Place"],
         "product_name": raw["Title"].str.strip(),
-        "brand": [guess_brand(t, known) for t in raw["Title"]],
+        "brand": None,
         "pack_size": raw["Details"],
         "selling_price": sp,
-        "mrp": raw["Price_original"].map(_rupees).fillna(sp),    # no strike-through price = no discount
-        "in_stock": raw["Tag"].fillna("") != "Out of Stock",
+        "mrp": raw["Price_original"].map(_rupees),
+        "in_stock": raw["Tag"].map({"Out of Stock": False, "In Stock": True}),
     })
     n = load_snapshot_frame(con, df, run_id)
     print(f"loaded {n:,} Blinkit price rows")

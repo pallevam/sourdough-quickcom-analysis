@@ -15,18 +15,14 @@ from pathlib import Path
 import anthropic
 import duckdb
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 import assistant as ai
 import market_queries as mq
+from qcom.db import validate
 
 ROOT = Path(__file__).resolve().parents[1]
-DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))
-
-# Reference palette (dataviz skill): categorical slots in fixed order, light + dark steps.
-CAT_LIGHT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
-CAT_DARK = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"]
+DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom-observations-v2.duckdb"))
 
 st.set_page_config(page_title="India quick-commerce explorer", page_icon=":material/storefront:", layout="wide")
 
@@ -61,7 +57,7 @@ password_gate()
 
 @st.cache_resource(show_spinner="Building the database (first start only, ~10 s)...")
 def ensure_db() -> None:
-    """A fresh server has only the repo: build data/qcom.duckdb from the Kaggle zips + synthetic panel."""
+    """A fresh server has only the repo: build the observation warehouse from the source archives."""
     if not DB.exists():
         subprocess.run([sys.executable, "-m", "qcom", "--db", str(DB), "build"], cwd=ROOT, check=True,
                        env={**os.environ, "PYTHONPATH": str(ROOT / "src")})
@@ -72,6 +68,7 @@ def connection() -> duckdb.DuckDBPyConnection:
     ensure_db()
     # Read-only: coexists with the DuckDB UI; `qcom build` needs both closed.
     con = duckdb.connect(str(DB), read_only=True)
+    validate(con)
     # Sandbox for the SQL playground and the chat assistant: no local files, no network,
     # and the settings can't be switched back from SQL.
     con.execute("SET enable_external_access = false")
@@ -85,24 +82,10 @@ def run(sql: str) -> pd.DataFrame:
         return cur.sql(sql).df()
 
 
-def is_dark() -> bool:
-    return getattr(st.context.theme, "type", None) == "dark"
-
-
-def palette() -> list[str]:
-    return CAT_DARK if is_dark() else CAT_LIGHT
-
-
 def sql_box(sql: str, key: str) -> None:
     with st.expander("SQL for DuckDB UI"):
         st.code(sql, language="sql")
         st.download_button("Download .sql", sql, file_name=f"{key}.sql", key=f"dl_{key}")
-
-
-def chart(fig, height=380, top=36, key=None):
-    fig.update_layout(height=height, margin=dict(l=8, r=8, t=top, b=8), legend_title_text="",
-                      hoverlabel=dict(namelength=-1))
-    st.plotly_chart(fig, width="stretch", theme="streamlit", key=key, alt=fig.layout.title.text or "Query result chart")
 
 
 # All category exploration uses actual observations, never a sales proxy.
@@ -110,30 +93,25 @@ st.title("India quick-commerce explorer")
 st.caption("Explore observed assortment, brands, pack prices and availability across categories.")
 
 with st.sidebar:
-    dataset = st.radio("Data", ["Real observations", "Synthetic demo"], key="dataset")
-    synthetic = dataset == "Synthetic demo"
     st.caption("Empty selections include all available values. Filters apply to the four exploration views.")
 
-coverage = run(mq.coverage(synthetic))
-if synthetic:
-    st.warning("Synthetic demo: fictional bakery brands and simulated observations, not market evidence.")
-else:
-    st.info("Historical samples, not the whole market. BigBasket is e-grocery; Swiggy/Zomato files are "
-            "restaurant data. There are no real Instamart products or sales figures in this warehouse.")
+coverage = run(mq.coverage())
+st.info("Historical source records, not current inventory or the whole market. Source files can contain errors. "
+        "BigBasket is e-grocery; Swiggy/Zomato files are restaurant data. This warehouse has no measured product sales.")
 
 if coverage.empty:
-    st.info("No observations loaded for this dataset. Load source files or choose another dataset.")
+    st.info("No observations loaded. Load source files.")
     st.stop()
 
-f = mq.MarketFilters(synthetic=synthetic)
+f = mq.MarketFilters()
 
 def choices(column):
     return run(mq.options(f, column)).iloc[:, 0].tolist()
 
 with st.sidebar:
-    suffix = "_demo" if synthetic else "_real"
+    suffix = "_real"
     f.platforms = st.multiselect("Platform", choices("platform_code"), key="platforms" + suffix)
-    f.categories = st.multiselect("Category (source label or inferred fallback)", choices("category"), key="categories" + suffix)
+    f.categories = st.multiselect("Category (source label)", choices("category"), key="categories" + suffix)
     f.brands = st.multiselect("Brand", choices("brand_name"), key="brands" + suffix)
     f.markets = st.multiselect("Market / city", choices("market"), key="markets" + suffix,
                                help="Unknown means no usable location; it does not establish national availability.")
@@ -171,7 +149,7 @@ def assortment():
         st.metric("Category labels", df.category.nunique(), border=True)
         st.metric("Known brand labels", df.loc[df.brand_name.ne("Unknown"), "brand_name"].nunique(), border=True)
     st.caption("Counts are platform listings, not unique cross-platform products or market share. "
-               "Brand names may be inferred. Source category labels differ between platforms; inferred fallbacks need review.")
+               "Brands and categories are source-reported. Missing labels stay Unknown; labels differ between platforms.")
     summary = run(mq.summary(f))
     top = summary.head(20).copy()
     top["Category / platform"] = top.category + " · " + top.platform_code
@@ -210,8 +188,7 @@ def trends_availability():
                                            "in_stock_pct": "In stock (%)", "listings": "Observed listings"}.get)
         st.line_chart(df, x="record_date", y=metric, color="Series", alt="Daily observations by platform and market")
         sql_box(mq.trend(f), "observed_trend")
-    st.caption("Missing stock data stays blank. Stock-outs can reflect supply issues or scrape gaps as well as demand. "
-               "The historical Blinkit Kolkata sample records no stock-outs; validate before comparing cities.")
+    st.caption("Missing stock data stays blank. Stock-outs can reflect supply issues or scrape gaps as well as demand.")
     table(mq.availability(f), "availability")
 
 
@@ -232,14 +209,13 @@ def research():
 
 def sources():
     st.subheader("Source coverage and data quality")
-    st.caption("Whole selected dataset; exploration filters do not apply to this view.")
-    table(mq.coverage(synthetic), "source_coverage")
-    st.markdown("**Category quality:** source labels are preserved in the explorer. Where absent, the existing "
-                "rule-based taxonomy is a fallback, not a verified classification.\n\n"
-                "**Units:** the legacy parser treats millilitres as grams. The generic explorer therefore uses "
-                "pack prices and does not present universal Rs/100 g comparisons.\n\n"
-                "**Freshness:** BigBasket and Zepto record dates are archive timestamps. These samples must not "
-                "be read as current platform inventory or a common-period price comparison.")
+    st.caption("Whole warehouse; exploration filters do not apply to this view.")
+    table(mq.coverage(), "source_coverage")
+    st.markdown("**Source labels:** brands and categories are shown only when supplied by the source. "
+                "Missing values remain unknown. Prices are per pack; no unit conversions are inferred.\n\n"
+                "**Stock:** only explicit stock labels are counted. Missing labels remain unknown.\n\n"
+                "**Freshness:** BigBasket and Zepto dates are archive timestamps, not verified observation dates. "
+                "These samples do not establish current inventory or common-period comparisons.")
     st.subheader("Restaurant context (real data)")
     st.caption("Food-delivery listings are kept separate from product assortment and brand-opportunity metrics.")
     table("SELECT p.platform_code, count(*) AS restaurant_rows, count(DISTINCT city_id) AS cities "
@@ -264,8 +240,8 @@ def playground():
 EXAMPLES = [
     "Which categories have the most real Zepto listings?",
     "Compare brand assortment within BigBasket beverages.",
-    "Which Blinkit categories have the weakest observed availability?",
-    "What data is missing before I can assess a brand opportunity?",
+    "Show source coverage and missing stock observations.",
+    "Show observed Blinkit pack prices.",
 ]
 
 @st.cache_resource
@@ -273,41 +249,24 @@ def system_prompt() -> str:
     return ai.build_system_prompt(connection())
 
 
-def chart_for(df: pd.DataFrame):
-    """A quick chart when a result has an obvious shape: time series or one category vs one number."""
-    if df is None or len(df) < 2 or len(df.columns) < 2:
-        return None
-    first, nums = df.columns[0], df.select_dtypes("number").columns.tolist()
-    if not nums:
-        return None
-    if pd.api.types.is_datetime64_any_dtype(df[first]) or "date" in first or "week" in first or "month" in first:
-        long = df.melt(first, nums[:6]) if len(df.columns) > 2 and len(nums) > 1 else None
-        if long is not None:
-            fig = px.line(long, x=first, y="value", color="variable", color_discrete_sequence=palette())
-        else:
-            fig = px.line(df, x=first, y=nums[0], color=df.columns[1] if df.columns[1] not in nums else None,
-                          color_discrete_sequence=palette())
-        return fig
-    if len(df.columns) == 2 and first not in nums and len(df) <= 30:
-        return px.bar(df, x=nums[0], y=first, orientation="h", color_discrete_sequence=palette()[:1])
-    return None
-
-
 def show_turn(turn: ai.Turn, n: int) -> None:
     with st.chat_message("user"):
         st.markdown(turn.question)
     with st.chat_message("assistant"):
         if turn.answer:
-            st.markdown(turn.answer)
+            st.write(turn.answer)
         if turn.notice:
             st.warning(turn.notice)
         ok = [r for r in turn.queries if r.error is None]
-        if ok and (fig := chart_for(ok[-1].df)) is not None:
-            chart(fig, height=320, top=10, key=f"chat_fig_{n}")
+        for i, result in enumerate(ok):
+            st.subheader(result.purpose)
+            st.dataframe(result.df, hide_index=True, alt=result.purpose, key=f"evidence_{n}_{i}")
+            if result.truncated:
+                st.caption(f"Result limited to {ai.ROWS_TO_UI:,} rows; not the full result.")
         if turn.queries:
             with st.expander(f"How I got this ({len(turn.queries)} quer{'y' if len(turn.queries) == 1 else 'ies'})"):
                 for i, r in enumerate(turn.queries, 1):
-                    st.markdown(f"**{i}. {r.purpose or 'Query'}**")
+                    st.write(f"{i}. {r.purpose or 'Query'}")
                     st.code(r.sql, language="sql")
                     if r.error:
                         st.caption(f"Error (the assistant retried): {r.error[:300]}")
@@ -323,18 +282,19 @@ def ask_tab():
                 "On Streamlit Cloud: app settings → Secrets.")
         return
     limit = int(secret("CHAT_MAX_QUESTIONS", "25"))
-    if "assistant" not in st.session_state:
-        st.session_state.assistant = ai.Assistant(
+    if "evidence_assistant" not in st.session_state:
+        st.session_state.evidence_assistant = ai.Assistant(
             anthropic.Anthropic(api_key=key), connection(), system_prompt(),
             model=secret("CHAT_MODEL", ai.DEFAULT_MODEL), effort=secret("CHAT_EFFORT", "medium"))
         st.session_state.turns = []
     turns: list[ai.Turn] = st.session_state.turns
 
     top = st.columns([5, 1])
-    top[0].markdown("Ask a question in plain English. The assistant writes and runs SQL on the whole "
-                    "dataset (the sidebar filters don't apply here) and shows its working.")
+    top[0].markdown("Ask for observed listings, pack prices, availability, or source coverage. "
+                    "Only approved database reports are displayed; unsupported questions are left unanswered. "
+                    "Sidebar filters do not apply here. Check the displayed scope and source dates.")
     if top[1].button("New chat", disabled=not turns):
-        del st.session_state.assistant
+        del st.session_state.evidence_assistant
         st.rerun()
 
     if not turns:
@@ -354,7 +314,7 @@ def ask_tab():
         with st.chat_message("user"):
             st.markdown(question)
         with st.chat_message("assistant"), st.status("Thinking...", expanded=False) as status:
-            turn = st.session_state.assistant.ask(
+            turn = st.session_state.evidence_assistant.ask(
                 question, on_query=lambda r: status.update(label=f"Querying: {r.purpose or 'running SQL'}"))
             status.update(label=f"Done ({len(turn.queries)} queries)", state="complete")
         turns.append(turn)

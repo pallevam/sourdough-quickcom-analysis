@@ -3,11 +3,11 @@
 --
 --   ref.*   reference / dimension tables (platform, geography, taxonomy, brand)
 --   core.*  facts at the grain they were observed (one row per scrape observation)
---   mart.*  analytical views (sales estimates, trends) -- see 03_marts.sql
+--   mart.*  analytical views (observed prices and stock) -- see 03_marts.sql
 --
 -- Foreign keys are documented in comments rather than declared: DuckDB's FK
 -- enforcement blocks updates on referenced rows (e.g. listing.last_seen_at).
--- Orphans are caught by the `dq_orphans` query in queries/sourdough.sql instead.
+-- Orphans are caught by the `dq_orphans` query in queries/observations.sql instead.
 -- =============================================================================
 
 CREATE SCHEMA IF NOT EXISTS ref;
@@ -85,15 +85,7 @@ CREATE TABLE IF NOT EXISTS ref.brand (
     brand_id        INTEGER PRIMARY KEY DEFAULT nextval('ref.seq_brand'),
     brand_name      VARCHAR NOT NULL,
     brand_key       VARCHAR NOT NULL UNIQUE,     -- normalised for matching
-    brand_type      VARCHAR CHECK (brand_type IN ('national', 'regional', 'artisanal', 'private_label', 'unknown')),
-    is_synthetic    BOOLEAN NOT NULL DEFAULT FALSE
-);
-
--- Assumptions used by the sales-estimation views. Change them here, not in SQL.
-CREATE TABLE IF NOT EXISTS ref.model_param (
-    param           VARCHAR PRIMARY KEY,
-    value           DOUBLE NOT NULL,
-    description     VARCHAR
+    brand_type      VARCHAR CHECK (brand_type IN ('national', 'regional', 'artisanal', 'private_label', 'unknown'))
 );
 
 -- --------------------------------------------------------------------- core --
@@ -132,7 +124,7 @@ CREATE TABLE IF NOT EXISTS core.listing (
 -- Lineage: every loaded file is a run. Re-loading the same file is a no-op.
 CREATE TABLE IF NOT EXISTS core.scrape_run (
     run_id          INTEGER PRIMARY KEY DEFAULT nextval('core.seq_run'),
-    source_type     VARCHAR NOT NULL CHECK (source_type IN ('kaggle', 'own_scrape', 'vendor', 'synthetic')),
+    source_type     VARCHAR NOT NULL CHECK (source_type IN ('kaggle', 'own_scrape', 'vendor')),
     source_file     VARCHAR NOT NULL,
     file_sha256     VARCHAR NOT NULL UNIQUE,
     loaded_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -154,9 +146,8 @@ CREATE TABLE IF NOT EXISTS core.listing_snapshot (
     max_cart_qty    INTEGER,
     eta_minutes     SMALLINT,
     rating          DECIMAL(3, 2),
-    rating_count    INTEGER,                     -- cumulative; deltas are a demand signal
+    rating_count    INTEGER,                     -- cumulative source count
     is_sponsored    BOOLEAN,
-    is_synthetic    BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (listing_id, location_id, scraped_at)
 );
 
@@ -171,12 +162,11 @@ CREATE TABLE IF NOT EXISTS core.search_result (
     rank_position   SMALLINT NOT NULL,           -- 1 = top
     listing_id      INTEGER NOT NULL,
     is_sponsored    BOOLEAN,
-    is_synthetic    BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (platform_id, location_id, scraped_at, search_term, rank_position)
 );
 
 -- Food-delivery restaurant listings (Swiggy / Zomato). Not quick-commerce, but a
--- useful city-level proxy for bakery / cafe / sourdough affinity.
+-- separate source context, never evidence of product demand.
 CREATE TABLE IF NOT EXISTS core.restaurant_listing (
     restaurant_row_id  INTEGER PRIMARY KEY DEFAULT nextval('core.seq_restaurant'),
     run_id             INTEGER NOT NULL,
@@ -195,15 +185,4 @@ CREATE TABLE IF NOT EXISTS core.restaurant_listing (
     is_bakery          BOOLEAN,
     is_cafe            BOOLEAN,
     mentions_sourdough BOOLEAN
-);
-
--- Ground truth emitted by the synthetic generator ONLY, so the estimators in
--- mart.* can be scored. Never populated for real data.
-CREATE TABLE IF NOT EXISTS core.synthetic_truth_daily (
-    sales_date      DATE NOT NULL,
-    listing_id      INTEGER NOT NULL,
-    location_id     INTEGER NOT NULL,
-    units_sold      INTEGER NOT NULL,
-    units_lost      INTEGER NOT NULL,            -- demand that hit a stock-out
-    PRIMARY KEY (sales_date, listing_id, location_id)
 );

@@ -11,7 +11,6 @@ from queries import lit
 
 @dataclass
 class MarketFilters:
-    synthetic: bool = False
     platforms: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
     brands: list[str] = field(default_factory=list)
@@ -21,12 +20,12 @@ class MarketFilters:
     search: str = ""
 
 
-def source(synthetic=False):
-    return f"""SELECT s.*, l.platform_code, p.channel, l.canonical_name, l.brand_name,
-       coalesce(nullif(trim(raw.raw_category), ''), l.category_path, 'Uncategorised') AS category,
+def source():
+    return f"""SELECT s.*, l.platform_code, p.channel, raw.raw_name AS canonical_name, coalesce(nullif(trim(raw.raw_brand), ''), 'Unknown') AS brand_name,
+       coalesce(nullif(trim(raw.raw_category), ''), 'Unknown') AS category,
        CASE WHEN nullif(trim(raw.raw_category), '') IS NOT NULL THEN 'Source category'
-            ELSE 'Inferred taxonomy' END AS category_basis,
-       l.category_path AS inferred_category, raw.pack_size_raw,
+            ELSE 'Not supplied' END AS category_basis,
+       raw.pack_size_raw,
        lo.market, lo.region, lo.city_name, r.source_file,
        CASE WHEN r.source_type = 'kaggle' AND l.platform_code IN ('zepto', 'bigbasket')
             THEN 'Archive timestamp (observation date unknown)' ELSE 'Observation timestamp' END AS date_basis,
@@ -38,7 +37,7 @@ JOIN core.listing raw USING (listing_id)
 JOIN ref.platform p ON p.platform_id = l.platform_id
 JOIN mart.v_location lo USING (location_id)
 JOIN core.scrape_run r USING (run_id)
-WHERE s.is_synthetic = {lit(synthetic)}"""
+WHERE r.source_type IN ('kaggle', 'own_scrape', 'vendor')"""
 
 
 def filtered(f):
@@ -53,7 +52,7 @@ def filtered(f):
         clauses.append(f"CAST(scraped_at AS DATE) <= {lit(f.date_to)}")
     if f.search:
         clauses.append(f"contains(lower(canonical_name), lower({lit(f.search)}))")
-    return f"WITH observed AS ({source(f.synthetic)}), selected AS (SELECT * FROM observed WHERE " + ' AND '.join(clauses) + ')\n'
+    return f"WITH observed AS ({source()}), selected AS (SELECT * FROM observed WHERE " + ' AND '.join(clauses) + ')\n'
 
 
 def options(f, column):
@@ -64,11 +63,12 @@ def options(f, column):
 
 def products(f):
     return filtered(f) + """SELECT listing_id, platform_code, channel, brand_name,
-       canonical_name AS product, category, category_basis, inferred_category, pack_size_raw,
+       canonical_name AS product, category, category_basis, pack_size_raw,
        count(DISTINCT location_id) AS locations, count(*) AS observations,
        count(DISTINCT scraped_at::DATE) AS observed_days,
        min(scraped_at)::DATE AS first_record, max(scraped_at)::DATE AS last_record,
        any_value(date_basis) AS date_basis,
+       string_agg(DISTINCT source_file, '; ' ORDER BY source_file) AS source_files,
        avg(selling_price) FILTER (WHERE selling_price > 0) AS avg_pack_price,
        min(selling_price) FILTER (WHERE selling_price > 0) AS min_pack_price,
        max(selling_price) FILTER (WHERE selling_price > 0) AS max_pack_price,
@@ -96,8 +96,8 @@ SELECT platform_code, {dimension + ',' if dimension != 'platform_code' else ''}
 FROM products GROUP BY ALL ORDER BY listings DESC"""
 
 
-def coverage(synthetic=False):
-    return f"""WITH observed AS ({source(synthetic)})
+def coverage():
+    return f"""WITH observed AS ({source()})
 SELECT platform_code, channel, source_file, date_basis,
        count(DISTINCT listing_id) AS listings, count(*) AS observations,
        count(DISTINCT market) FILTER (WHERE market <> 'Unknown') AS known_markets,
@@ -105,7 +105,7 @@ SELECT platform_code, channel, source_file, date_basis,
        min(scraped_at)::DATE AS first_record, max(scraped_at)::DATE AS last_record,
        round(100.0 * count(in_stock) / count(*), 1) AS stock_coverage_pct,
        count(*) FILTER (WHERE selling_price IS NULL OR selling_price <= 0) AS invalid_price_rows,
-       count(DISTINCT listing_id) FILTER (WHERE category_basis = 'Inferred taxonomy') AS inferred_category_listings
+       count(DISTINCT listing_id) FILTER (WHERE category_basis = 'Not supplied') AS missing_category_listings
 FROM observed GROUP BY ALL ORDER BY platform_code, source_file"""
 
 

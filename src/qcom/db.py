@@ -10,7 +10,7 @@ import duckdb
 ROOT = Path(__file__).resolve().parents[2]
 SQL_DIR = ROOT / "sql"
 SEED_DIR = ROOT / "data" / "seed"
-DEFAULT_DB = ROOT / "data" / "qcom.duckdb"
+DEFAULT_DB = ROOT / "data" / "qcom-observations-v2.duckdb"
 
 
 def connect(path: Path | str = DEFAULT_DB) -> duckdb.DuckDBPyConnection:
@@ -24,6 +24,9 @@ def run_sql_file(con: duckdb.DuckDBPyConnection, path: Path) -> None:
 
 def init(con: duckdb.DuckDBPyConnection) -> None:
     """Create schema, seed reference data, (re)create mart views. Safe to re-run."""
+    existing = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'core'").fetchone()[0]
+    if existing:
+        validate(con)
     run_sql_file(con, SQL_DIR / "01_schema.sql")
     run_sql_file(con, SQL_DIR / "02_seed.sql")
     cities, aliases = SEED_DIR / "cities.csv", SEED_DIR / "city_aliases.csv"
@@ -93,3 +96,11 @@ def resolve_cities(con, raw_names) -> dict[str, int]:
             row = (city_id,)
         out[raw] = row[0]
     return out
+
+
+def validate(con):
+    """Refuse older warehouses; source files must be rebuilt under this contract."""
+    cols = con.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'core' AND table_name = 'listing_snapshot' ORDER BY ordinal_position").fetchall()
+    expected = ['run_id', 'listing_id', 'location_id', 'scraped_at', 'selling_price', 'mrp', 'in_stock', 'inventory_qty', 'max_cart_qty', 'eta_minutes', 'rating', 'rating_count', 'is_sponsored']
+    if [r[0] for r in cols] != expected:
+        raise ValueError("Unsupported warehouse version. Build a new database from source files with python -m qcom build.")

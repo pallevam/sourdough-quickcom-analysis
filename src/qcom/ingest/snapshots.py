@@ -1,6 +1,6 @@
 """Loader for the quick-commerce scrape contract.
 
-Any scraper (yours, a vendor's, the synthetic generator) writes files with these
+An observed-data scraper (yours or a vendor's) writes files with these
 columns and this loader takes care of geography, brand, product matching and
 lineage. Accepted formats: .parquet, .csv, .json/.jsonl.
 
@@ -8,11 +8,11 @@ SNAPSHOT file (one row per SKU seen at a location at a time)
   required: platform, platform_sku, scraped_at, product_name, selling_price
   optional: pincode, locality, city, brand, brand_type, platform_category, pack_size,
             mrp, in_stock, inventory_qty, max_cart_qty, eta_minutes, rating,
-            rating_count, is_sponsored, url, is_synthetic
+            rating_count, is_sponsored, url
 
 SEARCH file (one row per result slot)
   required: platform, platform_sku, scraped_at, search_term, rank_position
-  optional: pincode, locality, city, is_sponsored, is_synthetic
+  optional: pincode, locality, city, is_sponsored
 """
 
 from __future__ import annotations
@@ -29,9 +29,9 @@ from qcom.taxonomy import bread_attributes, classify, is_sourdough
 SNAPSHOT_REQUIRED = ["platform", "platform_sku", "scraped_at", "product_name", "selling_price"]
 SNAPSHOT_OPTIONAL = ["pincode", "locality", "city", "brand", "brand_type", "platform_category",
                      "pack_size", "mrp", "in_stock", "inventory_qty", "max_cart_qty", "eta_minutes",
-                     "rating", "rating_count", "is_sponsored", "url", "is_synthetic"]
+                     "rating", "rating_count", "is_sponsored", "url"]
 SEARCH_REQUIRED = ["platform", "platform_sku", "scraped_at", "search_term", "rank_position"]
-SEARCH_OPTIONAL = ["pincode", "locality", "city", "is_sponsored", "is_synthetic"]
+SEARCH_OPTIONAL = ["pincode", "locality", "city", "is_sponsored"]
 FUZZY_THRESHOLD = 0.90
 
 
@@ -45,6 +45,9 @@ def _conform(df: pd.DataFrame, required: list[str], optional: list[str]) -> pd.D
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"file is missing required columns: {missing}")
+    unexpected = set(df.columns) - set(required + optional)
+    if unexpected:
+        raise ValueError(f"Unsupported input columns: {sorted(unexpected)}")
     df = df.copy()
     for c in optional:
         if c not in df.columns:
@@ -54,7 +57,6 @@ def _conform(df: pd.DataFrame, required: list[str], optional: list[str]) -> pd.D
     # '' instead of NULL so (pincode, locality) is a usable unique key
     df["pincode"] = df["pincode"].fillna("").astype(str).str.strip()
     df["locality"] = df["locality"].fillna("").astype(str).str.strip()
-    df["is_synthetic"] = df["is_synthetic"].map(lambda v: bool(v) if pd.notna(v) else False)
     return df
 
 
@@ -111,11 +113,11 @@ class _Matcher:
             self.cands.setdefault((b, g), []).append((pid, toks))
         self.new_brands, self.new_products = [], []
 
-    def _brand_id(self, name: str, brand_type, synthetic: bool) -> int:
+    def _brand_id(self, name: str, brand_type) -> int:
         key = brand_key(name)
         if key not in self.brands:
             self.brands[key] = _next_ids(self.con, "ref.seq_brand", 1)[0]
-            self.new_brands.append((self.brands[key], name, key, brand_type or "unknown", synthetic))
+            self.new_brands.append((self.brands[key], name, key, brand_type or "unknown"))
         return self.brands[key]
 
     def match(self, platform_id: int, row) -> tuple[int, str, float]:
@@ -144,8 +146,7 @@ class _Matcher:
                 sourdough = is_sourdough(name)
                 attrs = bread_attributes(name) if sourdough or (category_id or 0) // 100 == 1 else {}
                 pid = _next_ids(self.con, "core.seq_product", 1)[0]
-                self.new_products.append((pid, key, name, self._brand_id(brand, _text(row.brand_type),
-                                          bool(row.is_synthetic)), category_id or 999, grams, pieces,
+                self.new_products.append((pid, key, name, self._brand_id(brand, _text(row.brand_type)), category_id or 999, grams, pieces,
                                           sourdough, json.dumps(attrs)))
                 self.by_key[key] = pid
                 self.cands.setdefault((bkey, gkey), []).append((pid, tokens))
@@ -155,8 +156,8 @@ class _Matcher:
 
     def flush(self) -> None:
         if self.new_brands:
-            self.con.executemany("INSERT INTO ref.brand (brand_id, brand_name, brand_key, brand_type, is_synthetic) "
-                                 "VALUES (?, ?, ?, ?, ?)", self.new_brands)
+            self.con.executemany("INSERT INTO ref.brand (brand_id, brand_name, brand_key, brand_type) "
+                                 "VALUES (?, ?, ?, ?)", self.new_brands)
         if self.new_products:
             prod = pd.DataFrame(self.new_products, columns=["product_id", "product_key", "canonical_name",
                                 "brand_id", "category_id", "pack_grams", "pack_units", "is_sourdough", "attributes"])
@@ -173,7 +174,7 @@ def _listing_ids(con, df: pd.DataFrame) -> pd.Series:
                 .groupby(["platform", "platform_sku"], as_index=False)
                 .agg(first_seen=("scraped_at", "min"), last_seen=("scraped_at", "max"),
                      **{c: (c, "last") for c in ["product_name", "brand", "brand_type",
-                        "platform_category", "pack_size", "url", "is_synthetic"]}))
+                        "platform_category", "pack_size", "url"]}))
     latest["platform_id"] = latest["platform"].map({p: db.platform_id(con, p) for p in latest["platform"].unique()})
     con.register("_latest", latest)
     existing = con.execute("""
@@ -231,7 +232,7 @@ def load_snapshot_frame(con, df: pd.DataFrame, run_id: int) -> int:
         INSERT OR IGNORE INTO core.listing_snapshot
         SELECT run_id, listing_id, location_id, scraped_at, selling_price, mrp, in_stock,
                inventory_qty, max_cart_qty, eta_minutes, rating, rating_count,
-               is_sponsored, is_synthetic
+               is_sponsored
         FROM _snap
     """).fetchone()[0]
     con.unregister("_snap")
@@ -251,7 +252,7 @@ def load_search(con, path: Path, source_type: str = "own_scrape") -> int:
     n = con.execute("""
         INSERT OR IGNORE INTO core.search_result
         SELECT ?, p.platform_id, s.location_id, s.scraped_at, s.search_term, s.rank_position,
-               l.listing_id, s.is_sponsored, s.is_synthetic
+               l.listing_id, s.is_sponsored
         FROM _srch s
         JOIN ref.platform p ON p.platform_code = s.platform
         JOIN core.listing l ON l.platform_id = p.platform_id AND l.platform_sku = s.platform_sku

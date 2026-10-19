@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 import assistant as ai  # noqa: E402
 
-DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom.duckdb"))  # override to test another build
+DB = Path(os.environ.get("QCOM_DB", ROOT / "data" / "qcom-observations-v2.duckdb"))  # override to test another build
 pytestmark = pytest.mark.skipif(not DB.exists(), reason="run `python -m qcom build` first")
 
 
@@ -26,12 +26,12 @@ def con():
 
 
 @pytest.mark.parametrize("sql", [
-    "SELECT platform_code, count(*) FROM mart.sales_daily GROUP BY 1",
+    "SELECT listing_id, count(*) FROM core.listing_snapshot GROUP BY 1",
     "WITH x AS (SELECT 1 AS a) SELECT * FROM x",
-    "FROM ref.model_param",
+    "FROM ref.platform",
     "SUMMARIZE mart.v_location",
-    "PIVOT (SELECT region, platform_code, est_gmv FROM mart.sales_daily WHERE region <> 'Unknown') "
-    "ON platform_code USING sum(est_gmv) GROUP BY region",
+    "PIVOT (SELECT platform_code, listing_id FROM mart.v_listing) "
+    "ON platform_code USING count(listing_id)",
 ])
 def test_read_queries_allowed(con, sql):
     r = ai.run_sql(con, sql)
@@ -50,11 +50,10 @@ def test_writes_files_and_config_blocked(con, sql):
     assert ai.run_sql(con, sql).error
 
 
-def test_system_prompt_lists_panel_values_only(con):
+def test_system_prompt_uses_observations(con):
     p = ai.build_system_prompt(con)
-    assert "mart.sales_daily" in p and "Levain & Loaf" in p
-    assert "Cadbury" not in p  # real catalogue brands stay out of the value lists
-    assert "The Baker's Dozen" in p and "2024-01-17" in p  # real sourdough + real Blinkit dates are described
+    assert "archive dates" in p and "sales" in p
+    assert "Levain & Loaf" not in p
 
 
 def _resp(content, stop):
@@ -75,41 +74,37 @@ class FakeClient:
         return self.script.pop(0)
 
 
-def test_tool_loop_runs_sql_and_returns_answer(con):
-    client = FakeClient([
-        _resp([NS(type="tool_use", id="t1", name="run_sql",
-                  input={"sql": "SELECT nope FROM mart.sales_daily", "purpose": "bad"})], "tool_use"),
-        _resp([NS(type="tool_use", id="t2", name="run_sql",
-                  input={"sql": "SELECT count(*) AS n FROM mart.sales_daily", "purpose": "count rows"})], "tool_use"),
-        _resp([NS(type="text", text="There are many rows.")], "end_turn"),
-    ])
-    a = ai.Assistant(client, con, "system", model="claude-opus-5-5")
-    turn = a.ask("How many rows?")
-    assert turn.answer == "There are many rows."
-    assert [q.error is None for q in turn.queries] == [False, True]
-    # The error went back to the model flagged as an error, so it can fix its SQL.
-    # history: [question, assistant tool_use, tool results, assistant tool_use, tool results, answer]
-    first_results = a.messages[2]["content"][0]
-    assert first_results["is_error"] and "nope" in first_results["content"]
-    assert client.calls[0]["fallbacks"] == "default"
-    assert "server-side-fallback-2026-07-01" in client.calls[0]["betas"]
+def test_report_only_ignores_fabricated_prose(con):
+    client = FakeClient([_resp([
+        NS(type="text", text="Revenue is 999 crore"),
+        NS(type="tool_use", name="select_report", input={"report": "platforms", "filters": {}}),
+    ], "tool_use")])
+    turn = ai.Assistant(client, con, "system").ask("Show platforms")
+    assert "999" not in turn.answer
+    assert len(turn.queries) == 2 and not turn.queries[0].error
+    assert set(turn.queries[0].df.platform_code) == {"blinkit", "zepto", "bigbasket"}
 
 
-def test_refusal_and_round_limit(con, monkeypatch):
-    a = ai.Assistant(FakeClient([_resp([], "refusal")]), con, "system")
-    assert "declined" in a.ask("?").notice
+@pytest.mark.parametrize("blocks", [
+    [NS(type="text", text="Revenue is 999 crore")],
+    [NS(type="tool_use", name="run_sql", input={"sql": "SELECT 999"})],
+    [NS(type="tool_use", name="select_report", input={"report": "unsupported", "filters": {}})],
+    [NS(type="tool_use", name="select_report", input={"report": "products", "filters": {"sql": "SELECT 999"}})],
+])
+def test_unsupported_output_cannot_become_answer(con, blocks):
+    client = FakeClient([_resp(blocks, "tool_use")])
+    turn = ai.Assistant(client, con, "system").ask("Revenue?")
+    assert not turn.answer and not turn.queries and "Insufficient evidence" in turn.notice
 
-    monkeypatch.setattr(ai, "MAX_TOOL_ROUNDS", 2)
-    loop = [_resp([NS(type="tool_use", id=f"t{i}", name="run_sql",
-                      input={"sql": "SELECT 1", "purpose": ""})], "tool_use") for i in range(2)]
-    a = ai.Assistant(FakeClient(loop), con, "system")
-    turn = a.ask("?")
-    assert "too many" in turn.notice
-    assert a.messages[-1]["role"] == "assistant"  # history stays valid for the next question
+
+def test_empty_and_escaped_filter(con):
+    args = {"report": "products", "filters": {"search": "' OR TRUE --"}}
+    client = FakeClient([_resp([NS(type="tool_use", name="select_report", input=args)], "tool_use")])
+    turn = ai.Assistant(client, con, "system").ask("Find product")
+    assert turn.queries[0].df.empty and "No source records" in turn.answer
 
 
-def test_haiku_default_sends_no_fallback(con):
-    client = FakeClient([_resp([NS(type="text", text="ok")], "end_turn")])
-    ai.Assistant(client, con, "system").ask("hi")
-    assert client.calls[0]["model"] == "claude-haiku-5-5"
-    assert "fallbacks" not in client.calls[0] and "betas" not in client.calls[0]
+def test_truncation_is_explicit(con, monkeypatch):
+    monkeypatch.setattr(ai, "ROWS_TO_UI", 2)
+    result = ai.run_sql(con, "SELECT * FROM range(3)")
+    assert result.truncated and len(result.df) == 2
