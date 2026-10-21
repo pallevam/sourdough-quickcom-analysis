@@ -1,6 +1,7 @@
 """Ask selects reviewed reports; only database results and fixed text reach the UI."""
 from __future__ import annotations
 import threading
+import re
 from dataclasses import dataclass, field
 from datetime import date
 import anthropic
@@ -23,12 +24,16 @@ REPORTS = {
     "coverage": ("Source coverage (whole warehouse)", lambda f: mq.coverage()),
 }
 GUIDANCE = """Select one report for the user's question using select_report. Never write SQL or answers.
-Use unsupported for sales, revenue, market share, demand, predictions, recommendations, current
+Use unsupported for consumption (consume/eat), quantities purchased or sold, sales, revenue, market share, demand, predictions, recommendations, current
 inventory, or questions that the available historical observations cannot answer. Do not substitute
 listing counts for sales. Categories, brands and pack sizes are source labels. Missing labels and
 stock stay unknown. Zepto/BigBasket dates are archive dates; trends exclude them. Prices are per pack.
 Extract only filters explicitly requested. Use exact source labels from the supplied values; if a
 requested label is absent, retain it so the result is empty. Each question is independent.
+For example: "how much bread does Hyderabad consume per day" is unsupported, NEVER trends.
+"Show bread listings" means products with search="bread", not category="bread" unless an exact
+source category was requested. Match platform/category/brand/market labels case-insensitively.
+Use trends only for explicitly requested historical PRICE or STOCK changes.
 Reports: products, categories, brands, platforms, availability, trends, coverage (unfiltered).
 """
 
@@ -75,6 +80,36 @@ def report_query(args):
         raise ValueError("Coverage is unfiltered")
     title, builder = REPORTS[args["report"]]
     return title, builder(f), repr(filters) if filters else "All available records"
+
+UNSUPPORTED_MEASURE = re.compile(
+    r"\b(consum(?:e[ds]?|ing|ption)|eaten|eat(?:s|ing)?|sold|sell(?:s|ing)?|sales|"
+    r"revenue|gmv|demand|market share|purchas(?:e[ds]?|ing)|orders?|forecast\w*|predict\w*)\b", re.I)
+MISSING_MEASURES = (
+    "Insufficient evidence: this warehouse has no measured consumption, units sold, orders, "
+    "revenue or demand. Price, stock and listing counts cannot answer that question. "
+    "Daily city consumption needs measured purchase/consumption data for that city and period. "
+    "Use the data browser above to explore historical listings and pack prices instead."
+)
+
+
+def empty_explanation(con, args):
+    notes = []
+    for key, column in (("platforms", "platform_code"), ("categories", "category"),
+                        ("brands", "brand_name"), ("markets", "market")):
+        requested = args["filters"].get(key, [])
+        if not requested:
+            continue
+        available = [r[0] for r in con.sql(mq.options(mq.MarketFilters(), column)).fetchall()]
+        missing = [v for v in requested if v.casefold() not in {x.casefold() for x in available}]
+        if missing:
+            notes.append(f"No recorded {key} matching: {', '.join(missing)}.")
+            if key in ("platforms", "markets"):
+                notes.append(f"Available {key}: {', '.join(available)}. Unknown means location was not supplied.")
+    if args["report"] == "trends":
+        notes.append("Trends exclude Zepto and BigBasket because their dates are archive timestamps.")
+    notes.append("Check the selected scope, dates and source labels in the data browser. Filters have not been broadened.")
+    return " ".join(notes)
+
 
 @dataclass
 class QueryResult:
@@ -135,6 +170,9 @@ class Assistant:
 
     def ask(self, question, on_query=None):
         turn = Turn(question)
+        if UNSUPPORTED_MEASURE.search(question):
+            turn.notice = MISSING_MEASURES
+            return turn
         try:
             resp = self.client.messages.create(
                 model=self.model, max_tokens=1200, system=self.system,
@@ -145,7 +183,8 @@ class Assistant:
             blocks = [b for b in resp.content if b.type == "tool_use"]
             if resp.stop_reason != "tool_use" or len(blocks) != 1 or blocks[0].name != "select_report":
                 raise ValueError("No supported report")
-            title, sql, scope = report_query(blocks[0].input)
+            args = blocks[0].input
+            title, sql, scope = report_query(args)
             result = run_sql(self.con, sql, title)
             turn.queries.append(result)
             if on_query:
@@ -153,12 +192,13 @@ class Assistant:
             if result.error:
                 turn.notice = "The report could not be loaded. No answer is available."
             elif result.df.empty:
-                turn.answer = "No source records match this report. This does not establish absence in the market."
+                turn.answer = (f"No source records match this report. Selected scope: {scope}. "
+                               "This does not establish absence in the market. " + empty_explanation(self.con, args))
             else:
                 turn.answer = f"{title}. Selected scope: {scope}. Results below are historical source records."
                 turn.queries.append(run_sql(self.con, mq.coverage(), "Source dates and coverage (whole warehouse)"))
         except (ValueError, TypeError, KeyError):
-            turn.notice = "Insufficient evidence: this question could not be mapped to a supported observation report."
+            turn.notice = "Insufficient evidence: this question could not be mapped to a supported observation report. Use the data browser to see available sources and run a report directly."
         except anthropic.APIError:
             turn.notice = "The assistant service is unavailable. No answer is available."
         return turn

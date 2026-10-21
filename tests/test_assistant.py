@@ -93,7 +93,7 @@ def test_report_only_ignores_fabricated_prose(con):
 ])
 def test_unsupported_output_cannot_become_answer(con, blocks):
     client = FakeClient([_resp(blocks, "tool_use")])
-    turn = ai.Assistant(client, con, "system").ask("Revenue?")
+    turn = ai.Assistant(client, con, "system").ask("Show platforms")
     assert not turn.answer and not turn.queries and "Insufficient evidence" in turn.notice
 
 
@@ -108,3 +108,33 @@ def test_truncation_is_explicit(con, monkeypatch):
     monkeypatch.setattr(ai, "ROWS_TO_UI", 2)
     result = ai.run_sql(con, "SELECT * FROM range(3)")
     assert result.truncated and len(result.df) == 2
+
+
+@pytest.mark.parametrize('question', [
+    'how much bread does hyderabad consume per day',
+    'Daily bread consumption in Hyderabad?',
+    'How many loaves were sold in Hyderabad?',
+    'What is the revenue from bread?',
+])
+def test_unmeasured_questions_never_route_to_prices(con, question):
+    client = FakeClient([])
+    turn = ai.Assistant(client, con, 'system').ask(question)
+    assert 'no measured consumption' in turn.notice
+    assert not turn.queries and not client.calls
+
+
+def test_missing_market_explains_coverage(con):
+    args = {'report': 'products', 'filters': {'markets': ['Hyderabad'], 'search': 'bread'}}
+    client = FakeClient([_resp([NS(type='tool_use', name='select_report', input=args)], 'tool_use')])
+    turn = ai.Assistant(client, con, 'system').ask('Show bread listings in Hyderabad')
+    assert 'Hyderabad' in turn.answer and 'Available markets:' in turn.answer
+    assert 'Mumbai MMR' in turn.answer and turn.queries[0].df.empty
+
+
+def test_bread_search_returns_source_products(con):
+    args = {'report': 'products', 'filters': {'platforms': ['BigBasket'], 'search': 'bread'}}
+    _, sql, _ = ai.report_query(args)
+    result = ai.run_sql(con, sql)
+    assert not result.error and not result.df.empty
+    assert set(result.df.platform_code) == {'bigbasket'}
+    assert result.df['product'].str.contains('bread', case=False).all()

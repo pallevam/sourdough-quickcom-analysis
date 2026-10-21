@@ -45,7 +45,7 @@ def filtered(f):
     for col, vals in [('platform_code', f.platforms), ('category', f.categories),
                       ('brand_name', f.brands), ('market', f.markets)]:
         if vals:
-            clauses.append(f"{col} IN ({', '.join(lit(v) for v in vals)})")
+            clauses.append(f"lower({col}) IN ({', '.join(lit(v.lower()) for v in vals)})")
     if f.date_from:
         clauses.append(f"CAST(scraped_at AS DATE) >= {lit(f.date_from)}")
     if f.date_to:
@@ -125,3 +125,10 @@ def availability(f):
        count(DISTINCT scraped_at::DATE) AS observed_days,
        100 * avg((NOT in_stock)::INT) AS out_of_stock_pct
 FROM selected GROUP BY ALL ORDER BY out_of_stock_pct DESC NULLS LAST"""
+
+
+def geography():
+    return f"""WITH observed AS ({source()})
+SELECT platform_code, market, date_basis, count(DISTINCT listing_id) AS listings,
+       min(scraped_at)::DATE AS first_record, max(scraped_at)::DATE AS last_record
+FROM observed GROUP BY ALL ORDER BY platform_code, market"""

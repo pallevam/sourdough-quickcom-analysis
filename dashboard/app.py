@@ -259,7 +259,7 @@ def show_turn(turn: ai.Turn, n: int) -> None:
             st.write(turn.answer)
         if turn.notice:
             st.warning(turn.notice)
-        ok = [r for r in turn.queries if r.error is None]
+        ok = [r for r in turn.queries if r.error is None and not r.df.empty]
         for i, result in enumerate(ok):
             st.subheader(result.purpose)
             st.dataframe(result.df, hide_index=True, alt=result.purpose, key=f"evidence_{n}_{i}")
@@ -271,12 +271,43 @@ def show_turn(turn: ai.Turn, n: int) -> None:
                     st.write(f"{i}. {r.purpose or 'Query'}")
                     st.code(r.sql, language="sql")
                     if r.error:
-                        st.caption(f"Error (the assistant retried): {r.error[:300]}")
+                        st.caption(f"Query error: {r.error[:300]}")
                     else:
                         st.dataframe(r.df.head(200), alt="Assistant query result", hide_index=True, width="stretch", key=f"chat_df_{n}_{i}")
 
 
+def data_browser():
+    st.subheader("What data can I query?")
+    st.write("Available: historical product listings, source brands/categories, pack prices and explicit stock labels. "
+             "Not available: consumption, units sold, orders, revenue, demand or current inventory.")
+    st.caption("Check location coverage below before asking a city-specific question. "
+               "Unknown location does not mean nationwide coverage.")
+    st.dataframe(run(mq.geography()), hide_index=True, alt="Available platforms, locations and dates")
+    with st.expander("Source coverage and missing fields"):
+        st.dataframe(run(mq.coverage()), hide_index=True, alt="Source row counts and missing stock and category fields")
+    with st.expander("Browse data directly — no AI required", expanded=True):
+        st.caption("These controls are independent of the sidebar. Product search matches text in source product names.")
+        report = st.selectbox("Report", list(ai.REPORTS),
+                              format_func=lambda k: ai.REPORTS[k][0], key="browse_report")
+        platform = st.selectbox("Source platform", ["All"] + run(mq.options(mq.MarketFilters(), "platform_code")).iloc[:, 0].tolist(), key="browse_platform")
+        bf = mq.MarketFilters(platforms=[] if platform == "All" else [platform])
+        market = st.selectbox("Recorded location", ["All"] + run(mq.options(bf, "market")).iloc[:, 0].tolist(), key="browse_market")
+        bf.markets = [] if market == "All" else [market]
+        bf.search = st.text_input("Product name contains", key="browse_search", placeholder="bread")
+        if report == "coverage":
+            st.caption("Source coverage always includes the whole warehouse; these filters do not apply.")
+        if st.button("Show records", key="browse_run"):
+            result = run(ai.REPORTS[report][1](bf))
+            if result.empty:
+                st.info("No records match these filters. Try a source product name or check location coverage above.")
+            else:
+                st.dataframe(result.head(ai.ROWS_TO_UI), hide_index=True, alt="Direct observation report")
+                st.caption(f"{len(result):,} result rows; showing up to {ai.ROWS_TO_UI:,}.")
+
+
 def ask_tab():
+    data_browser()
+    st.subheader("Ask a question")
     key = secret("ANTHROPIC_API_KEY")
     if not key:
         st.info("The assistant needs an Anthropic API key. Locally: `export ANTHROPIC_API_KEY=...` before "
@@ -284,8 +315,8 @@ def ask_tab():
                 "On Streamlit Cloud: app settings → Secrets.")
         return
     limit = int(secret("CHAT_MAX_QUESTIONS", "25"))
-    if "evidence_assistant" not in st.session_state:
-        st.session_state.evidence_assistant = ai.Assistant(
+    if "evidence_assistant_v3" not in st.session_state:
+        st.session_state.evidence_assistant_v3 = ai.Assistant(
             anthropic.Anthropic(api_key=key), connection(), system_prompt(),
             model=secret("CHAT_MODEL", ai.DEFAULT_MODEL), effort=secret("CHAT_EFFORT", "medium"))
         st.session_state.turns = []
@@ -296,7 +327,7 @@ def ask_tab():
                     "Only approved database reports are displayed; unsupported questions are left unanswered. "
                     "Sidebar filters do not apply here. Check the displayed scope and source dates.")
     if top[1].button("New chat", disabled=not turns):
-        del st.session_state.evidence_assistant
+        del st.session_state.evidence_assistant_v3
         st.rerun()
 
     if not turns:
@@ -316,7 +347,7 @@ def ask_tab():
         with st.chat_message("user"):
             st.markdown(question)
         with st.chat_message("assistant"), st.status("Thinking...", expanded=False) as status:
-            turn = st.session_state.evidence_assistant.ask(
+            turn = st.session_state.evidence_assistant_v3.ask(
                 question, on_query=lambda r: status.update(label=f"Querying: {r.purpose or 'running SQL'}"))
             status.update(label=f"Done ({len(turn.queries)} queries)", state="complete")
         turns.append(turn)

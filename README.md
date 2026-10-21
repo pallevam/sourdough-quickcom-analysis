@@ -28,6 +28,10 @@ Source provenance is recorded in `core.scrape_run`. Product observations live in
 
 Assortment, Brands and prices, Trends and availability, and Research shortlist share sidebar filters. Data coverage describes the whole warehouse. Tables include CSV and SQL exports. SQL playground allows read-only queries with external access disabled, a time limit and a row cap.
 
+Ask includes a source/location/date coverage table and a direct report browser that works without an API key. Use Product name contains to find terms such as bread; location Unknown does not establish city-level availability.
+
+Consumption and sales wording is checked before model routing; those questions get an explicit missing-measure explanation. Empty reports show the requested scope and identify unavailable location/platform labels without silently broadening filters.
+
 Ask uses a model only to select a reviewed report and filters. The app validates that selection, executes its own SQL, and displays database tables, selected scope, source coverage and fixed explanatory text. It never displays model-written factual answers or executes model-written SQL. Unsupported questions return an insufficient-evidence message. Report selection can still misinterpret a question: check the displayed scope and query. Each question is independent.
 
 Set `ANTHROPIC_API_KEY` in environment or Streamlit secrets for Ask. Optional settings: `CHAT_MODEL`, `CHAT_MAX_QUESTIONS` (default 25), and `APP_PASSWORD`. No API request is made by tests.

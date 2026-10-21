@@ -31,3 +31,24 @@ def test_explorer_views_and_filters():
         app.selectbox(key='view').select(view).run()
         assert not app.exception, view
     app.selectbox(key='view').select('Assortment').run()
+
+
+def test_ask_exposes_data_and_direct_reports_without_api(monkeypatch):
+    import anthropic
+    def no_api(*args, **kwargs):
+        raise AssertionError('Direct browsing must not call the model')
+    monkeypatch.setattr(anthropic.resources.messages.Messages, 'create', no_api)
+    app = AppTest.from_file(str(ROOT / 'dashboard/app.py'), default_timeout=30)
+    app.session_state['authed'] = True
+    app.run()
+    app.selectbox(key='view').select('Ask').run()
+    assert not app.exception
+    assert any('What data can I query?' in h.value for h in app.subheader)
+    app.selectbox(key='browse_report').select('products').run()
+    app.selectbox(key='browse_platform').select('bigbasket').run()
+    app.text_input(key='browse_search').set_value('bread').run()
+    app.button(key='browse_run').click().run()
+    assert not app.exception
+    results = [df.value for df in app.dataframe if 'product' in df.value.columns]
+    assert len(results) == 1 and not results[0].empty
+    assert results[0]['product'].str.contains('bread', case=False).all()
